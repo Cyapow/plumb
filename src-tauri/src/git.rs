@@ -1078,6 +1078,42 @@ pub fn repo_state(path: String) -> Result<RepoState> {
     Ok(RepoState { state, conflicts })
 }
 
+/// One HEAD reflog entry — a point HEAD has been, so lost commits after a bad
+/// reset/rebase can be recovered.
+#[derive(Serialize)]
+pub struct ReflogEntry {
+    pub index: usize,
+    pub id: String,
+    pub short_id: String,
+    pub action: String,
+    pub message: String,
+    pub time: i64,
+}
+
+/// Read the HEAD reflog (most recent first), capped so it stays snappy.
+#[tauri::command]
+pub fn reflog(path: String) -> Result<Vec<ReflogEntry>> {
+    let repo = open(&path)?;
+    let rl = repo.reflog("HEAD")?;
+    let mut out = Vec::new();
+    for i in 0..rl.len().min(250) {
+        if let Some(e) = rl.get(i) {
+            let oid = e.id_new();
+            let message = e.message().unwrap_or("").to_string();
+            let action = message.split(':').next().unwrap_or("").trim().to_string();
+            out.push(ReflogEntry {
+                index: i,
+                id: oid.to_string(),
+                short_id: short(&oid),
+                action,
+                message,
+                time: e.committer().when().seconds(),
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// A file with unresolved merge conflicts, and whether each side still exists
 /// (a side is absent for add/add or delete/modify conflicts).
 #[derive(Serialize)]
@@ -1229,6 +1265,100 @@ pub fn commit_details(path: String, id: String) -> Result<CommitDetail> {
         parents: commit.parent_ids().map(|p| p.to_string()).collect(),
         files,
     })
+}
+
+/// Summary of comparing two refs (branches or commits): commit lead/lag and the
+/// files that differ between their trees.
+#[derive(Serialize)]
+pub struct CompareSummary {
+    pub ahead: usize,
+    pub behind: usize,
+    pub files: Vec<ChangedFile>,
+}
+
+/// Compare `base` with `compare` (each a branch name or revspec).
+#[tauri::command]
+pub fn compare_refs(path: String, base: String, compare: String) -> Result<CompareSummary> {
+    let repo = open(&path)?;
+    let base_commit = repo.revparse_single(&base)?.peel_to_commit()?;
+    let comp_commit = repo.revparse_single(&compare)?.peel_to_commit()?;
+    let (ahead, behind) = repo.graph_ahead_behind(comp_commit.id(), base_commit.id())?;
+    let diff = repo.diff_tree_to_tree(Some(&base_commit.tree()?), Some(&comp_commit.tree()?), None)?;
+    let mut files = Vec::new();
+    for delta in diff.deltas() {
+        let p = delta
+            .new_file()
+            .path()
+            .or_else(|| delta.old_file().path())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        files.push(ChangedFile { path: p, code: delta_code(delta.status()).to_string() });
+    }
+    Ok(CompareSummary { ahead, behind, files })
+}
+
+/// Diff of one file between two refs.
+#[tauri::command]
+pub fn compare_file_diff(path: String, base: String, compare: String, file: String) -> Result<FileDiff> {
+    let repo = open(&path)?;
+    let base_tree = repo.revparse_single(&base)?.peel_to_commit()?.tree()?;
+    let comp_tree = repo.revparse_single(&compare)?.peel_to_commit()?.tree()?;
+    let mut opts = DiffOptions::new();
+    opts.pathspec(&file);
+    opts.context_lines(3);
+    let diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&comp_tree), Some(&mut opts))?;
+    collect_file_diff(&diff, &file, false)
+}
+
+/// Search all history. `mode` = "message" (grep commit message) or "code"
+/// (pickaxe -G: commits whose diff matches the query). Delegated to `git log`.
+#[tauri::command]
+pub async fn search_commits(
+    path: String,
+    query: String,
+    mode: String,
+    limit: Option<usize>,
+) -> Result<Vec<CommitRow>> {
+    spawn(move || {
+        if query.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let n = limit.unwrap_or(200).to_string();
+        let fmt = "--pretty=format:%H\u{1f}%h\u{1f}%s\u{1f}%an\u{1f}%ae\u{1f}%at\u{1f}%P";
+        let mut args: Vec<String> = vec!["log".into(), "--all".into(), "-n".into(), n];
+        match mode.as_str() {
+            "code" => args.push(format!("-G{query}")),
+            _ => {
+                args.push("-i".into());
+                args.push(format!("--grep={query}"));
+            }
+        }
+        args.push(fmt.into());
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = run_git(&path, &refs)?;
+        let mut rows = Vec::new();
+        for line in out.lines() {
+            let f: Vec<&str> = line.split('\u{1f}').collect();
+            if f.len() < 7 {
+                continue;
+            }
+            let parents: Vec<String> = f[6].split_whitespace().map(String::from).collect();
+            rows.push(CommitRow {
+                id: f[0].to_string(),
+                short_id: f[1].to_string(),
+                summary: f[2].to_string(),
+                body: String::new(),
+                author_name: f[3].to_string(),
+                author_email: f[4].to_string(),
+                time: f[5].parse().unwrap_or(0),
+                is_merge: parents.len() > 1,
+                parents,
+                refs: Vec::new(),
+            });
+        }
+        Ok(rows)
+    })
+    .await
 }
 
 /// Diff of one file within a commit (against its first parent).
@@ -1791,6 +1921,17 @@ pub async fn push_advanced(
     .await
 }
 
+/// Push a specific local branch to origin and set upstream (works even if the
+/// branch isn't the current HEAD). Used before opening a PR/MR.
+#[tauri::command]
+pub async fn push_branch(path: String, branch: String) -> Result<String> {
+    spawn(move || {
+        let out = run_git(&path, &["push", "--set-upstream", "origin", &branch])?;
+        Ok(if out.is_empty() { format!("Pushed {branch}") } else { out })
+    })
+    .await
+}
+
 /// Pull with an explicit integration mode: "merge", "rebase", or "ff-only".
 #[tauri::command]
 pub async fn pull_mode(path: String, mode: String) -> Result<String> {
@@ -1877,6 +2018,188 @@ pub async fn rebase_interactive(
         } else {
             stderr.trim().to_string()
         }))
+    })
+    .await
+}
+
+/* ── Submodules ───────────────────────────────────────────────────── */
+
+#[derive(Serialize)]
+pub struct SubmoduleInfo {
+    pub name: String,
+    pub path: String,
+    pub url: String,
+    /// Commit the superproject pins vs. what's actually checked out.
+    pub pinned_id: Option<String>,
+    pub wd_id: Option<String>,
+    pub initialized: bool,
+    pub modified: bool,
+}
+
+#[tauri::command]
+pub fn list_submodules(path: String) -> Result<Vec<SubmoduleInfo>> {
+    let repo = open(&path)?;
+    let mut out = Vec::new();
+    for sm in repo.submodules()? {
+        let name = sm.name().unwrap_or("").to_string();
+        let status = repo.submodule_status(&name, git2::SubmoduleIgnore::None).ok();
+        let modified = status
+            .map(|s| {
+                s.intersects(
+                    git2::SubmoduleStatus::WD_MODIFIED
+                        | git2::SubmoduleStatus::WD_INDEX_MODIFIED
+                        | git2::SubmoduleStatus::WD_WD_MODIFIED
+                        | git2::SubmoduleStatus::WD_UNTRACKED,
+                )
+            })
+            .unwrap_or(false);
+        out.push(SubmoduleInfo {
+            name,
+            path: sm.path().to_string_lossy().to_string(),
+            url: sm.url().unwrap_or("").to_string(),
+            pinned_id: sm.head_id().map(|o| o.to_string()),
+            wd_id: sm.workdir_id().map(|o| o.to_string()),
+            initialized: sm.open().is_ok(),
+            modified,
+        });
+    }
+    Ok(out)
+}
+
+/// Init + update submodules (optionally recursively) to their pinned commits.
+#[tauri::command]
+pub async fn update_submodules(path: String, init: bool) -> Result<String> {
+    spawn(move || {
+        let mut args: Vec<&str> = vec!["submodule", "update"];
+        if init {
+            args.push("--init");
+        }
+        args.push("--recursive");
+        run_git(&path, &args)?;
+        Ok("Submodules updated".into())
+    })
+    .await
+}
+
+/* ── Worktrees ────────────────────────────────────────────────────── */
+
+#[derive(Serialize)]
+pub struct WorktreeInfo {
+    pub path: String,
+    pub head: String,
+    pub branch: String,
+    pub is_main: bool,
+}
+
+#[tauri::command]
+pub async fn list_worktrees(path: String) -> Result<Vec<WorktreeInfo>> {
+    spawn(move || {
+        let out = run_git(&path, &["worktree", "list", "--porcelain"])?;
+        let mut trees: Vec<WorktreeInfo> = Vec::new();
+        let mut first = true;
+        for line in out.lines() {
+            if let Some(p) = line.strip_prefix("worktree ") {
+                trees.push(WorktreeInfo {
+                    path: p.to_string(),
+                    head: String::new(),
+                    branch: "(detached)".into(),
+                    is_main: first,
+                });
+                first = false;
+            } else if let Some(h) = line.strip_prefix("HEAD ") {
+                if let Some(t) = trees.last_mut() {
+                    t.head = short(&Oid::from_str(h).unwrap_or_else(|_| Oid::zero()));
+                }
+            } else if let Some(b) = line.strip_prefix("branch ") {
+                if let Some(t) = trees.last_mut() {
+                    t.branch = b.trim_start_matches("refs/heads/").to_string();
+                }
+            }
+        }
+        Ok(trees)
+    })
+    .await
+}
+
+/// Add a worktree at `new_path`. If `new_branch`, create `branch` there.
+#[tauri::command]
+pub async fn add_worktree(path: String, new_path: String, branch: String, new_branch: bool) -> Result<String> {
+    spawn(move || {
+        let mut args: Vec<&str> = vec!["worktree", "add"];
+        if new_branch {
+            args.push("-b");
+            args.push(&branch);
+            args.push(&new_path);
+        } else {
+            args.push(&new_path);
+            args.push(&branch);
+        }
+        run_git(&path, &args)?;
+        Ok(format!("Worktree added at {new_path}"))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn remove_worktree(path: String, worktree_path: String) -> Result<String> {
+    spawn(move || {
+        run_git(&path, &["worktree", "remove", "--force", &worktree_path])?;
+        Ok("Worktree removed".into())
+    })
+    .await
+}
+
+/* ── Bisect ───────────────────────────────────────────────────────── */
+
+#[derive(Serialize)]
+pub struct BisectStatus {
+    pub active: bool,
+    pub current: Option<String>,
+    pub current_short: Option<String>,
+}
+
+#[tauri::command]
+pub fn bisect_status(path: String) -> Result<BisectStatus> {
+    let repo = open(&path)?;
+    let active = repo.path().join("BISECT_LOG").exists();
+    let (current, current_short) = match repo.head().ok().and_then(|h| h.target()) {
+        Some(o) => (Some(o.to_string()), Some(short(&o))),
+        None => (None, None),
+    };
+    Ok(BisectStatus { active, current, current_short })
+}
+
+/// Begin a bisect between a known-bad and known-good commit; returns git's hint.
+#[tauri::command]
+pub async fn bisect_start(path: String, bad: String, good: String) -> Result<String> {
+    spawn(move || {
+        run_git(&path, &["bisect", "start"])?;
+        run_git(&path, &["bisect", "bad", &bad])?;
+        run_git(&path, &["bisect", "good", &good])
+    })
+    .await
+}
+
+/// Mark the current commit good/bad/skip; returns git's next step or the result.
+#[tauri::command]
+pub async fn bisect_mark(path: String, verdict: String) -> Result<String> {
+    spawn(move || {
+        let v = match verdict.as_str() {
+            "good" => "good",
+            "bad" => "bad",
+            "skip" => "skip",
+            _ => return Err(GitError::Message("verdict must be good/bad/skip".into())),
+        };
+        run_git(&path, &["bisect", v])
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn bisect_reset(path: String) -> Result<String> {
+    spawn(move || {
+        run_git(&path, &["bisect", "reset"])?;
+        Ok("Bisect ended".into())
     })
     .await
 }

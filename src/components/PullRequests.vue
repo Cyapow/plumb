@@ -7,6 +7,7 @@ import { openSettings } from "../lib/ui";
 import { relativeTime } from "../lib/format";
 
 const props = defineProps<{ repoPath: string }>();
+const emit = defineEmits<{ (e: "create"): void }>();
 
 const data = ref<PrList | null>(null);
 const loading = ref(false);
@@ -67,6 +68,7 @@ function iso(s: string) {
       <span class="title">{{ data?.provider === "gitlab" ? "Merge requests" : "Pull requests" }}</span>
       <span v-if="data?.host" class="host mono">{{ data.host }}</span>
       <span class="grow"></span>
+      <button class="btn new-btn" @click="emit('create')">New</button>
       <button class="btn" :disabled="loading" @click="load">{{ loading ? "…" : "Refresh" }}</button>
     </div>
 
@@ -138,6 +140,7 @@ function iso(s: string) {
 .pr-head .host { font-size: 11px; color: var(--text-faint); }
 .pr-head .grow { flex: 1; }
 .btn { height: 28px; padding: 0 14px; background: var(--raised); border: 1px solid var(--line); font-size: 12px; cursor: pointer; }
+.new-btn { background: var(--accent); color: var(--accent-on); border-color: var(--accent); font-weight: 700; }
 
 .pr-tabs { flex: none; display: flex; gap: 2px; padding: var(--space-2) var(--space-4); border-bottom: 1px solid var(--line); background: var(--subtle); }
 .tab { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 5px 12px; background: transparent; border: 1px solid transparent; color: var(--text-mid); cursor: pointer; }

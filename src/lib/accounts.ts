@@ -85,6 +85,34 @@ export function listPullRequests(repoPath: string): Promise<PrList> {
   return invoke("list_pull_requests", { repoPath });
 }
 
+export interface PrTarget {
+  provider: string; // "github" | "gitlab" | ""
+  host: string;
+  repo: string;
+}
+export function prTarget(repoPath: string): Promise<PrTarget> {
+  return invoke("pr_target", { repoPath });
+}
+
+export interface CreatedPr {
+  url: string;
+  number: number;
+  provider: string;
+}
+export function createPullRequest(
+  repoPath: string,
+  opts: { sourceBranch: string; targetBranch: string; title: string; body: string; draft: boolean },
+): Promise<CreatedPr> {
+  return invoke("create_pull_request", {
+    repoPath,
+    sourceBranch: opts.sourceBranch,
+    targetBranch: opts.targetBranch,
+    title: opts.title,
+    body: opts.body,
+    draft: opts.draft,
+  });
+}
+
 export interface RepoRef {
   name: string;
   sshUrl: string;

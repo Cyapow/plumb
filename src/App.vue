@@ -15,8 +15,10 @@ import {
   listCommits,
   listBranches,
   workingStatus,
+  searchCommits as searchAllCommits,
   type RepoInfo,
   type RemoteInfo,
+  type ReflogEntry,
   type CommitRow,
   type BranchInfo,
   type StatusEntry,
@@ -34,6 +36,10 @@ import {
   fetch as gitFetch,
   pull as gitPull,
   push as gitPush,
+  bisectStatus,
+  bisectMark,
+  bisectReset,
+  type BisectStatus,
   pushAdvanced,
   pullMode,
   deleteRemoteBranch,
@@ -87,6 +93,12 @@ import RemotesDialog from "./components/RemotesDialog.vue";
 import ConflictDialog from "./components/ConflictDialog.vue";
 import RebaseDialog from "./components/RebaseDialog.vue";
 import ConnectRemoteDialog from "./components/ConnectRemoteDialog.vue";
+import CreatePrDialog from "./components/CreatePrDialog.vue";
+import ReflogDialog from "./components/ReflogDialog.vue";
+import CompareDialog from "./components/CompareDialog.vue";
+import SubmodulesDialog from "./components/SubmodulesDialog.vue";
+import WorktreesDialog from "./components/WorktreesDialog.vue";
+import BisectDialog from "./components/BisectDialog.vue";
 import InputDialog from "./components/InputDialog.vue";
 import HomePage from "./components/HomePage.vue";
 import BranchTree from "./components/BranchTree.vue";
@@ -113,6 +125,82 @@ const rebaseOpen = ref(false);
 const rebaseBase = ref<string | null>(null);
 const rebaseCommits = ref<CommitRow[]>([]);
 const connectRemoteOpen = ref(false);
+const createPrOpen = ref(false);
+const prSourceBranch = ref<string | null>(null);
+function openCreatePr(source?: string) {
+  prSourceBranch.value = source ?? null;
+  createPrOpen.value = true;
+}
+
+const submodulesOpen = ref(false);
+const worktreesOpen = ref(false);
+const bisectOpen = ref(false);
+const bisect = ref<BisectStatus>({ active: false, current: null, current_short: null });
+
+async function doBisectMark(verdict: "good" | "bad" | "skip") {
+  if (!repo.value) return;
+  try {
+    const msg = await bisectMark(repo.value.path, verdict);
+    await refresh();
+    // git prints the result — flag the winner prominently.
+    if (/first bad commit/i.test(msg)) toast("Found it 🎯", msg.split("\n")[0]);
+    else toast("Bisect", msg.split("\n")[0] || "Marked");
+  } catch (e) {
+    toast("Bisect failed", String(e), "error");
+  }
+}
+async function doBisectReset() {
+  if (!repo.value) return;
+  try {
+    await bisectReset(repo.value.path);
+    await refresh();
+    toast("Bisect ended");
+  } catch (e) {
+    toast("Couldn't end bisect", String(e), "error");
+  }
+}
+
+const compareOpen = ref(false);
+const compareBase = ref<string | null>(null);
+function openCompare(base?: string) {
+  compareBase.value = base ?? null;
+  compareOpen.value = true;
+}
+
+const reflogOpen = ref(false);
+// Row actions in the reflog: recover a lost commit safely (new branch) or
+// move the current branch back to it. Reuses the commit-level ops.
+function reflogMenu(e: MouseEvent, entry: ReflogEntry) {
+  if (!repo.value) return;
+  const path = repo.value.path;
+  openContextMenu(e, [
+    {
+      label: "Create branch here…",
+      action: async () => {
+        const name = await promptText({ title: "Recover to a new branch", label: `From ${entry.short_id}`, placeholder: "recovered" });
+        if (name && name.trim()) {
+          runOp(() => createBranch(path, name.trim(), entry.id, true), `Branch "${name.trim()}" created`);
+          reflogOpen.value = false;
+        }
+      },
+    },
+    { label: "Check out this commit", action: () => { runOp(() => checkoutCommit(path, entry.id), "Checked out"); reflogOpen.value = false; } },
+    { separator: true, label: "" },
+    { label: "Soft reset branch to here", action: () => { runOp(() => gitReset(path, entry.id, "soft"), "Reset (soft)"); reflogOpen.value = false; } },
+    {
+      label: "Hard reset branch to here…",
+      danger: true,
+      action: () => {
+        if (window.confirm(`Hard reset ${headBranch.value} to ${entry.short_id}? This discards working changes.`)) {
+          runOp(() => gitReset(path, entry.id, "hard"), "Reset (hard)");
+          reflogOpen.value = false;
+        }
+      },
+    },
+    { separator: true, label: "" },
+    { label: "Copy SHA", action: () => copy(entry.id, "SHA") },
+  ]);
+}
 
 // Open-repo tabs + recents + home state
 interface Tab {
@@ -171,6 +259,7 @@ function loadExtras(path: string) {
   listTags(path).then((t) => (tags.value = t)).catch(() => (tags.value = []));
   listFiles(path).then((f) => (files.value = f)).catch(() => (files.value = []));
   listRemotes(path).then((r) => (remotes.value = r)).catch(() => (remotes.value = []));
+  bisectStatus(path).then((b) => (bisect.value = b)).catch(() => (bisect.value = { active: false, current: null, current_short: null }));
   repoState(path).then((r) => (state.value = r)).catch(() => (state.value = { state: "clean", conflicts: false }));
 }
 
@@ -205,17 +294,53 @@ const remoteBranches = computed(() => branches.value.filter((b) => b.is_remote))
 const headBranch = computed(() => repo.value?.head_branch ?? "HEAD");
 const headInfo = computed(() => localBranches.value.find((b) => b.is_head));
 
-// Toolbar search filters the commit list (by message, author, or hash).
+// Toolbar search. "view" filters the loaded commits client-side; "message" and
+// "code" search all history via the backend (git log --grep / pickaxe -G).
+type SearchScope = "view" | "message" | "code";
+const searchScope = ref<SearchScope>("view");
+const searchResults = ref<CommitRow[]>([]);
+const searching = ref(false);
+
 const visibleCommits = computed(() => {
-  const q = commitFilter.value.trim().toLowerCase();
+  const q = commitFilter.value.trim();
   if (!q) return commits.value;
+  if (searchScope.value !== "view") return searchResults.value;
+  const lc = q.toLowerCase();
   return commits.value.filter(
     (c) =>
-      c.summary.toLowerCase().includes(q) ||
-      c.author_name.toLowerCase().includes(q) ||
-      c.id.toLowerCase().includes(q),
+      c.summary.toLowerCase().includes(lc) ||
+      c.author_name.toLowerCase().includes(lc) ||
+      c.id.toLowerCase().includes(lc),
   );
 });
+
+let searchTimer: number | undefined;
+async function runDeepSearch() {
+  if (!repo.value || searchScope.value === "view") return;
+  const q = commitFilter.value.trim();
+  if (!q) {
+    searchResults.value = [];
+    return;
+  }
+  searching.value = true;
+  try {
+    searchResults.value = await searchAllCommits(repo.value.path, q, searchScope.value, 300);
+  } catch {
+    searchResults.value = [];
+  } finally {
+    searching.value = false;
+  }
+}
+// Debounce typing; re-run immediately when the scope changes.
+function onSearchInput() {
+  if (searchScope.value === "view") return;
+  clearTimeout(searchTimer);
+  searchTimer = window.setTimeout(runDeepSearch, 300);
+}
+function onScopeChange() {
+  selected.value = null;
+  runDeepSearch();
+}
 
 const laneColor = (i: number) => `var(--lane-${i % 7})`;
 
@@ -459,6 +584,12 @@ function handleMenuAction(id: string) {
     case "new_branch": return hasRepo ? void newBranchPrompt() : undefined;
     case "stash": return hasRepo ? void doStash() : undefined;
     case "remotes": return hasRepo ? void (remotesOpen.value = true) : undefined;
+    case "new_pr": return hasRepo ? openCreatePr() : undefined;
+    case "reflog": return hasRepo ? void (reflogOpen.value = true) : undefined;
+    case "compare": return hasRepo ? openCompare() : undefined;
+    case "submodules": return hasRepo ? void (submodulesOpen.value = true) : undefined;
+    case "worktrees": return hasRepo ? void (worktreesOpen.value = true) : undefined;
+    case "bisect": return hasRepo ? void (bisect.value.active ? doBisectReset() : (bisectOpen.value = true)) : undefined;
     case "github": return void openUrl("https://github.com").catch(() => {});
   }
 }
@@ -480,6 +611,12 @@ const paletteItems = computed<PaletteItem[]>(() => {
     { id: "a-push", label: "Push", hint: "⌘P", group: "Action", action: doPush },
     { id: "a-open", label: "Open a repository…", group: "Action", action: chooseRepo },
     { id: "a-remotes", label: "Manage remotes…", group: "Action", action: () => (remotesOpen.value = true) },
+    { id: "a-newpr", label: "New pull / merge request…", group: "Action", action: () => openCreatePr() },
+    { id: "a-reflog", label: "History (reflog) — recover lost commits…", group: "Action", action: () => (reflogOpen.value = true) },
+    { id: "a-compare", label: "Compare branches…", group: "Action", action: () => openCompare() },
+    { id: "a-submodules", label: "Submodules…", group: "Action", action: () => (submodulesOpen.value = true) },
+    { id: "a-worktrees", label: "Worktrees…", group: "Action", action: () => (worktreesOpen.value = true) },
+    { id: "a-bisect", label: bisect.value.active ? "Bisect — end" : "Bisect — start…", group: "Action", action: () => (bisect.value.active ? doBisectReset() : (bisectOpen.value = true)) },
     { id: "a-newbranch", label: "New branch…", group: "Action", action: newBranchPrompt },
     { id: "a-settings", label: "Settings", group: "Action", action: () => openSettings() },
     { id: "a-accounts", label: "Accounts", group: "Action", action: () => openSettings("accounts") },
@@ -627,6 +764,15 @@ function branchMenu(e: MouseEvent, b: BranchInfo) {
     b.is_remote
       ? { label: `Checkout ${b.name}`, action: () => checkoutRemote(b.name) }
       : { label: "Check out", disabled: b.is_head, action: () => checkout(b.name) },
+    {
+      label: "Create branch here…",
+      disabled: !b.target,
+      action: async () => {
+        const name = await promptText({ title: "New branch", label: `From ${b.name}`, placeholder: "feature/…" });
+        if (name && name.trim() && b.target)
+          runOp(() => createBranch(path, name.trim(), b.target!, true), `Branch "${name.trim()}" created`);
+      },
+    },
     { separator: true, label: "" },
     {
       label: `Merge ${b.name} into ${head}`,
@@ -639,6 +785,8 @@ function branchMenu(e: MouseEvent, b: BranchInfo) {
       action: () => opRun(() => rebaseBranch(path, b.name), "Rebase"),
     },
     { separator: true, label: "" },
+    { label: `Compare ${b.name} with ${head}`, disabled: b.is_head, action: () => openCompare(b.name) },
+    { label: "Create pull request…", action: () => openCreatePr(b.is_remote ? b.name.split("/").slice(1).join("/") : b.name) },
     { label: "Copy name", action: () => copy(b.name, "Branch name") },
     { separator: true, label: "" },
   ];
@@ -884,14 +1032,20 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
       <div class="spacer" data-tauri-drag-region></div>
 
       <div class="search">
-        <span class="glyph">⌕</span>
+        <span class="glyph">{{ searching ? "◌" : "⌕" }}</span>
         <input
           v-model="commitFilter"
           class="search-input"
-          placeholder="Search commits"
+          :placeholder="searchScope === 'code' ? 'Search code in history' : searchScope === 'message' ? 'Search all messages' : 'Search commits'"
           spellcheck="false"
           @focus="view = 'history'"
+          @input="onSearchInput"
         />
+        <select v-model="searchScope" class="scope" title="Search scope" @change="onScopeChange">
+          <option value="view">In view</option>
+          <option value="message">All · message</option>
+          <option value="code">All · code</option>
+        </select>
         <span v-if="commitFilter" class="clear" title="Clear" @click="commitFilter = ''">✕</span>
       </div>
     </header>
@@ -910,6 +1064,18 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
       <button v-if="state.conflicts" class="op-btn" @click="conflictOpen = true">Resolve conflicts</button>
       <button class="op-btn" @click="opRun(() => opContinue(repo!.path), 'Continue')">Continue</button>
       <button class="op-btn danger" @click="opRun(() => opAbort(repo!.path), 'Abort')">Abort</button>
+    </div>
+
+    <!-- Bisect in-progress banner -->
+    <div v-if="showWorkspace && bisect.active" class="op-banner bisect">
+      <span class="op-text">
+        <strong>Bisecting</strong> · testing <span class="mono">{{ bisect.current_short }}</span> — is the bug present?
+      </span>
+      <span class="grow"></span>
+      <button class="op-btn" @click="doBisectMark('good')">Good</button>
+      <button class="op-btn danger" @click="doBisectMark('bad')">Bad</button>
+      <button class="op-btn" @click="doBisectMark('skip')">Skip</button>
+      <button class="op-btn" @click="doBisectReset">End</button>
     </div>
 
     <!-- ── Full-screen diff (keeps the header above, like GitKraken) ── -->
@@ -1032,7 +1198,7 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
       />
 
       <!-- Pull / merge requests -->
-      <PullRequests v-else-if="view === 'prs'" :repo-path="repo.path" />
+      <PullRequests v-else-if="view === 'prs'" :repo-path="repo.path" @create="openCreatePr()" />
 
       <!-- History -->
       <section v-else class="history">
@@ -1133,6 +1299,32 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
       @done="refresh"
     />
     <ConnectRemoteDialog v-if="repo" v-model="connectRemoteOpen" :repo-path="repo.path" @connected="refresh" />
+    <CreatePrDialog
+      v-if="repo"
+      v-model="createPrOpen"
+      :repo-path="repo.path"
+      :branches="localBranches.map((b) => b.name)"
+      :current-branch="prSourceBranch ?? repo.head_branch"
+      @created="() => repo && loadPrCount(repo.path)"
+    />
+    <ReflogDialog v-if="repo" v-model="reflogOpen" :repo-path="repo.path" @menu="reflogMenu" />
+    <CompareDialog
+      v-if="repo"
+      v-model="compareOpen"
+      :repo-path="repo.path"
+      :branches="localBranches.map((b) => b.name)"
+      :current-branch="repo.head_branch"
+      :preset-base="compareBase"
+    />
+    <SubmodulesDialog v-if="repo" v-model="submodulesOpen" :repo-path="repo.path" @open="loadRepo" />
+    <WorktreesDialog v-if="repo" v-model="worktreesOpen" :repo-path="repo.path" :branches="localBranches.map((b) => b.name)" @open="loadRepo" />
+    <BisectDialog
+      v-if="repo"
+      v-model="bisectOpen"
+      :repo-path="repo.path"
+      :branches="localBranches.map((b) => b.name)"
+      @started="() => repo && loadExtras(repo.path)"
+    />
   </div>
 </template>
 
@@ -1323,11 +1515,12 @@ kbd {
   align-items: center;
   gap: var(--space-2);
   height: 30px;
-  width: 250px;
+  width: 320px;
   padding: 0 var(--space-3);
   background: var(--bg);
   border: 1px solid var(--line);
 }
+.search .scope { flex: none; background: var(--raised); border: 1px solid var(--line); color: var(--text-mid); font-size: 10.5px; height: 22px; padding: 0 2px; cursor: pointer; }
 .search .glyph { color: var(--text-faint); font-size: 12.5px; flex: none; }
 .search-input { flex: 1; min-width: 0; background: transparent; border: none; color: var(--text); font-size: 12.5px; font-family: var(--font-ui); }
 .search-input:focus { outline: none; }

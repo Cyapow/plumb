@@ -228,6 +228,18 @@ export function repoState(path: string): Promise<RepoState> {
   return invoke("repo_state", { path });
 }
 
+export interface ReflogEntry {
+  index: number;
+  id: string;
+  short_id: string;
+  action: string;
+  message: string;
+  time: number;
+}
+export function reflog(path: string): Promise<ReflogEntry[]> {
+  return invoke("reflog", { path });
+}
+
 export interface ConflictSides {
   base: string | null;
   ours: string | null;
@@ -318,6 +330,26 @@ export function commitFileDiff(path: string, id: string, file: string): Promise<
   return invoke("commit_file_diff", { path, id, file });
 }
 
+export interface CompareSummary {
+  ahead: number;
+  behind: number;
+  files: ChangedFile[];
+}
+export function compareRefs(path: string, base: string, compare: string): Promise<CompareSummary> {
+  return invoke("compare_refs", { path, base, compare });
+}
+export function compareFileDiff(path: string, base: string, compare: string, file: string): Promise<FileDiff> {
+  return invoke("compare_file_diff", { path, base, compare, file });
+}
+export function searchCommits(
+  path: string,
+  query: string,
+  mode: "message" | "code",
+  limit?: number,
+): Promise<CommitRow[]> {
+  return invoke("search_commits", { path, query, mode, limit });
+}
+
 export function checkoutBranch(path: string, name: string): Promise<void> {
   return invoke("checkout_branch", { path, name });
 }
@@ -384,12 +416,67 @@ export function pushAdvanced(
   });
 }
 
+export function pushBranch(path: string, branch: string): Promise<string> {
+  return invoke("push_branch", { path, branch });
+}
+
 export function pullMode(path: string, mode: "merge" | "rebase" | "ff-only"): Promise<string> {
   return invoke("pull_mode", { path, mode });
 }
 
 export function deleteRemoteBranch(path: string, remote: string, branch: string): Promise<string> {
   return invoke("delete_remote_branch", { path, remote, branch });
+}
+
+/* ── Power tools ── */
+export interface SubmoduleInfo {
+  name: string;
+  path: string;
+  url: string;
+  pinned_id: string | null;
+  wd_id: string | null;
+  initialized: boolean;
+  modified: boolean;
+}
+export function listSubmodules(path: string): Promise<SubmoduleInfo[]> {
+  return invoke("list_submodules", { path });
+}
+export function updateSubmodules(path: string, init: boolean): Promise<string> {
+  return invoke("update_submodules", { path, init });
+}
+
+export interface WorktreeInfo {
+  path: string;
+  head: string;
+  branch: string;
+  is_main: boolean;
+}
+export function listWorktrees(path: string): Promise<WorktreeInfo[]> {
+  return invoke("list_worktrees", { path });
+}
+export function addWorktree(path: string, newPath: string, branch: string, newBranch: boolean): Promise<string> {
+  return invoke("add_worktree", { path, newPath, branch, newBranch });
+}
+export function removeWorktree(path: string, worktreePath: string): Promise<string> {
+  return invoke("remove_worktree", { path, worktreePath });
+}
+
+export interface BisectStatus {
+  active: boolean;
+  current: string | null;
+  current_short: string | null;
+}
+export function bisectStatus(path: string): Promise<BisectStatus> {
+  return invoke("bisect_status", { path });
+}
+export function bisectStart(path: string, bad: string, good: string): Promise<string> {
+  return invoke("bisect_start", { path, bad, good });
+}
+export function bisectMark(path: string, verdict: "good" | "bad" | "skip"): Promise<string> {
+  return invoke("bisect_mark", { path, verdict });
+}
+export function bisectReset(path: string): Promise<string> {
+  return invoke("bisect_reset", { path });
 }
 
 export function renameRemote(path: string, from: string, to: string): Promise<void> {
