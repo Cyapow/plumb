@@ -1,0 +1,110 @@
+/* Plumb design tokens — the "Modernist" system from Claude Design.
+ * Dark is the hero theme (default). Light is a token swap only; no layout changes.
+ * Zero radius everywhere except the macOS app-icon squircle. 2px between regions,
+ * 1px within a list. Archivo for UI, JetBrains Mono for hashes/refs/code. */
+
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #171616;
+  --surface: #201e1d;
+  --raised: #2d2b2b;
+  --subtle: #1b1a19;      /* header strips, sunken rows */
+  --line: #3a3736;        /* region divider */
+  --line-soft: #232121;   /* within-list divider */
+
+  --text: #f3f2f2;
+  --text-mid: #bab6b6;
+  --text-dim: #9b9797;
+  --text-faint: #7d7979;
+
+  --accent: #ff563c;
+  --accent-strong: #dd2b0f;
+  --accent-fill: #7c1405;
+  --accent-on: #201e1d;   /* text/icon sitting on an accent fill */
+
+  /* Diff — blue/red, never green/red. */
+  --diff-add-bg: #16283a;
+  --diff-add-fg: #9dc9f5;
+  --diff-add-num: #7ab8f0;
+  --diff-del-bg: #3a1a14;
+  --diff-del-fg: #ff9783;
+
+  /* Traffic-light-safe: our custom toolbar leaves room for the overlay controls. */
+  --traffic-inset: 78px;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #f3f2f2;
+  --surface: #eae9e9;
+  --raised: #f8f4f4;
+  --subtle: #eae9e9;
+  --line: #d7d3d3;
+  --line-soft: #e4e1e1;
+
+  --text: #201e1d;
+  --text-mid: #444141;
+  --text-dim: #605d5d;
+  --text-faint: #7d7979;
+
+  --accent: #ec3013;
+  --accent-strong: #dd2b0f;
+  --accent-fill: #ec3013;
+  --accent-on: #ffffff;
+
+  --diff-add-bg: #e6f0fb;
+  --diff-add-fg: #1f6fb8;
+  --diff-add-num: #1f6fb8;
+  --diff-del-bg: #fbeae6;
+  --diff-del-fg: #c94b39;
+}
+
+/* Seven-lane commit-graph palette. Colorblind-safe (no green; red reserved for
+ * HEAD). Each lane resolves a different lightness per theme for >=4.5:1 on ground.
+ * Lane identity is reinforced by node *shape* in the graph, never colour alone. */
+:root,
+:root[data-theme="dark"] {
+  --lane-0: #ff563c; /* HEAD */
+  --lane-1: #4c9ef0;
+  --lane-2: #f0b429;
+  --lane-3: #45c8d8;
+  --lane-4: #b39bf5;
+  --lane-5: #e8e5e2;
+  --lane-6: #f58ba8;
+}
+:root[data-theme="light"] {
+  --lane-0: #dd2b0f; /* HEAD */
+  --lane-1: #1f6fb8;
+  --lane-2: #8f6300;
+  --lane-3: #0e7480;
+  --lane-4: #6b4fd0;
+  --lane-5: #444141;
+  --lane-6: #a8365a;
+}
+
+:root {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  --radius: 0px;
+
+  --font-ui: "Archivo", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Density (design: comfortable) */
+  --row-commit: 34px;
+  --row-sidebar: 26px;
+  --toolbar-h: 52px;
+  --diff-line-h: 22px;
+
+  --shadow-sm: 0 1px 2px color-mix(in srgb, #000 24%, transparent);
+  --shadow-md: 0 3px 10px color-mix(in srgb, #000 28%, transparent);
+  --shadow-lg: 0 12px 32px color-mix(in srgb, #000 38%, transparent);
+}

@@ -1,0 +1,72 @@
+/* highlight.js token colors — explicit, high-contrast palettes per theme
+ * (One Dark / One Light lineage) so code stays legible in both. */
+:root,
+:root[data-theme="dark"] {
+  --syn-keyword: #c678dd;
+  --syn-string: #98c379;
+  --syn-number: #d19a66;
+  --syn-func: #61afef;
+  --syn-type: #56b6c2;
+  --syn-tag: #e06c75;
+  --syn-attr: #d19a66;
+  --syn-comment: #7f848e;
+  --syn-meta: #7f848e;
+  --syn-var: var(--text);
+}
+:root[data-theme="light"] {
+  --syn-keyword: #a626a4;
+  --syn-string: #3c8a2e;
+  --syn-number: #9a5700;
+  --syn-func: #2f6df6;
+  --syn-type: #0184bc;
+  --syn-tag: #d1341f;
+  --syn-attr: #9a5700;
+  --syn-comment: #8a8f98;
+  --syn-meta: #8a8f98;
+  --syn-var: var(--text);
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag,
+.hljs-keyword.hljs-function { color: var(--syn-keyword); }
+
+.hljs-string,
+.hljs-regexp,
+.hljs-char.escape_,
+.hljs-symbol { color: var(--syn-string); }
+
+.hljs-number { color: var(--syn-number); }
+
+.hljs-title.function_,
+.hljs-title { color: var(--syn-func); }
+
+.hljs-built_in,
+.hljs-type,
+.hljs-class .hljs-title,
+.hljs-title.class_ { color: var(--syn-type); }
+
+.hljs-attr,
+.hljs-attribute,
+.hljs-property { color: var(--syn-attr); }
+
+.hljs-name,
+.hljs-tag,
+.hljs-selector-id,
+.hljs-selector-class { color: var(--syn-tag); }
+
+.hljs-comment,
+.hljs-quote { color: var(--syn-comment); font-style: italic; }
+
+.hljs-meta,
+.hljs-meta .hljs-keyword { color: var(--syn-meta); }
+
+.hljs-variable,
+.hljs-template-variable,
+.hljs-params { color: var(--syn-var); }
+
+.hljs-bullet,
+.hljs-code,
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 700; }

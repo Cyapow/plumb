@@ -1,0 +1,68 @@
+/* Plumb base styles. */
+
+* { box-sizing: border-box; }
+
+html, body, #app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* The window is the app; the OS chrome is our own toolbar. WKWebView needs
+   * the -webkit- prefix for user-select to actually take effect. */
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+  overflow: hidden;
+}
+
+/* Only genuine content is selectable — inputs, textareas, diff code, and
+ * anything explicitly opted in with [data-selectable]. */
+input,
+textarea,
+[contenteditable],
+[data-selectable],
+.diff .content,
+.hunks .content {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.mono { font-family: var(--font-mono); }
+
+/* Section labels: 11 / 600 / uppercase / 0.12em (design type scale). */
+.section-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+button {
+  font-family: inherit;
+  color: inherit;
+  cursor: default;
+}
+
+::selection { background: color-mix(in srgb, var(--accent) 40%, transparent); }
+
+/* Thin, quiet scrollbars in keeping with the density. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-faint) 45%, transparent);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-faint) 70%, transparent);
+  background-clip: padding-box;
+}
