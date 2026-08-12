@@ -440,6 +440,7 @@ function handleMenuAction(id: string) {
   const hasRepo = !!repo.value;
   switch (id) {
     case "settings": return openSettings();
+    case "accounts": return openSettings("accounts");
     case "new_tab": return goHome();
     case "close_tab": return activePath.value ? closeTab(activePath.value) : undefined;
     case "open_repo":

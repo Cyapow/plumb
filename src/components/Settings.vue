@@ -1,6 +1,27 @@
 <script setup lang="ts">
 // App settings modal. Sections live in a left rail; content on the right.
-import { settings, appState, setTheme, type SettingsSection } from "../lib/ui";
+import { computed, onMounted } from "vue";
+import {
+  settings,
+  appState,
+  setThemeId,
+  customThemesStore,
+  createCustomTheme,
+  updateCustomVar,
+  setCustomMode,
+  renameCustomTheme,
+  deleteCustomTheme,
+  fontStore,
+  CODE_FONTS,
+  systemFontsStore,
+  loadSystemFonts,
+  setCodeFontFamily,
+  setCodeFontSize,
+  setCodeLineHeight,
+  resetCodeFont,
+  type SettingsSection,
+} from "../lib/ui";
+import { BUILTIN_THEMES, type Theme, type TokenKey } from "../lib/themes";
 import AiProvidersPanel from "./AiProvidersPanel.vue";
 import ConnectionsPanel from "./ConnectionsPanel.vue";
 import PlumbMark from "./PlumbMark.vue";
@@ -11,6 +32,55 @@ const sections: { id: SettingsSection; label: string }[] = [
   { id: "appearance", label: "Appearance" },
   { id: "about", label: "About" },
 ];
+
+// Only the built-in themes get their own preview grid; custom themes get a
+// dedicated section below with per-theme edit/delete controls.
+const builtinGroups = computed(() => {
+  const groups: { name: string; themes: Theme[] }[] = [];
+  for (const t of BUILTIN_THEMES) {
+    let g = groups.find((x) => x.name === t.group);
+    if (!g) groups.push((g = { name: t.group, themes: [] }));
+    g.themes.push(t);
+  }
+  return groups;
+});
+
+// The custom theme currently applied (if any), for the editor.
+const activeCustom = computed(() => customThemesStore.themes.find((t) => t.id === appState.themeId) ?? null);
+
+// A small swatch preview from a theme's key colors (falls back to CSS vars for
+// the Modernist themes, whose values aren't in the map).
+function swatch(t: Theme, key: TokenKey, fallback: string) {
+  return t.vars[key] ?? fallback;
+}
+
+// The colors exposed in the custom editor.
+const CUSTOM_FIELDS: { key: TokenKey; label: string }[] = [
+  { key: "--bg", label: "Background" },
+  { key: "--surface", label: "Surface" },
+  { key: "--raised", label: "Raised" },
+  { key: "--line", label: "Lines" },
+  { key: "--text", label: "Text" },
+  { key: "--text-mid", label: "Text (muted)" },
+  { key: "--accent", label: "Accent" },
+  { key: "--accent-on", label: "On accent" },
+  { key: "--diff-add-fg", label: "Diff added" },
+  { key: "--diff-del-fg", label: "Diff removed" },
+];
+
+// System fonts, minus the ones we already bundle (to avoid duplicates).
+const bundledNames = new Set(CODE_FONTS.map((f) => f.name));
+const systemFontOptions = computed(() => systemFontsStore.list.filter((f) => !bundledNames.has(f)));
+onMounted(loadSystemFonts);
+
+// <input type=color> needs a #rrggbb value; coerce whatever the theme has.
+function hex(v: string | undefined): string {
+  if (!v) return "#000000";
+  const s = v.trim();
+  if (/^#[0-9a-f]{6}$/i.test(s)) return s;
+  if (/^#[0-9a-f]{3}$/i.test(s)) return "#" + s.slice(1).split("").map((c) => c + c).join("");
+  return "#000000";
+}
 </script>
 
 <template>
@@ -39,16 +109,128 @@ const sections: { id: SettingsSection; label: string }[] = [
             <ConnectionsPanel v-if="settings.section === 'accounts'" />
             <AiProvidersPanel v-else-if="settings.section === 'ai'" />
 
-            <div v-else-if="settings.section === 'appearance'">
-              <div class="row">
-                <div>
-                  <div class="row-title">Theme</div>
-                  <div class="row-sub">Dark is Plumb's hero theme.</div>
+            <div v-else-if="settings.section === 'appearance'" class="appearance">
+              <div class="row-title">Theme</div>
+              <div class="row-sub">Pick a built-in theme, or craft your own below.</div>
+
+              <div v-for="g in builtinGroups" :key="g.name" class="theme-group">
+                <div class="group-label">{{ g.name }}</div>
+                <div class="theme-grid">
+                  <button
+                    v-for="t in g.themes"
+                    :key="t.id"
+                    class="theme-card"
+                    :class="{ on: appState.themeId === t.id }"
+                    @click="setThemeId(t.id)"
+                  >
+                    <div
+                      class="preview"
+                      :style="{
+                        background: swatch(t, '--bg', 'var(--bg)'),
+                        borderColor: swatch(t, '--line', 'var(--line)'),
+                      }"
+                    >
+                      <span class="p-surface" :style="{ background: swatch(t, '--surface', 'var(--surface)') }"></span>
+                      <span class="p-accent" :style="{ background: swatch(t, '--accent', 'var(--accent)') }"></span>
+                      <span class="p-text" :style="{ background: swatch(t, '--text', 'var(--text)') }"></span>
+                    </div>
+                    <span class="t-name">{{ t.name }}</span>
+                    <span v-if="appState.themeId === t.id" class="t-check">✓</span>
+                  </button>
                 </div>
-                <div class="seg">
-                  <button :class="{ on: appState.theme === 'dark' }" @click="setTheme('dark')">Dark</button>
-                  <button :class="{ on: appState.theme === 'light' }" @click="setTheme('light')">Light</button>
+              </div>
+
+              <!-- Custom themes: create any number, select, edit or delete. -->
+              <div class="theme-group">
+                <div class="group-label">Custom</div>
+                <div class="row-sub">
+                  Creates a copy of the theme you're currently viewing, then lets you tweak it.
                 </div>
+                <div class="theme-grid">
+                  <button
+                    v-for="t in customThemesStore.themes"
+                    :key="t.id"
+                    class="theme-card"
+                    :class="{ on: appState.themeId === t.id }"
+                    @click="setThemeId(t.id)"
+                  >
+                    <div class="preview" :style="{ background: swatch(t, '--bg', 'var(--bg)'), borderColor: swatch(t, '--line', 'var(--line)') }">
+                      <span class="p-surface" :style="{ background: swatch(t, '--surface', 'var(--surface)') }"></span>
+                      <span class="p-accent" :style="{ background: swatch(t, '--accent', 'var(--accent)') }"></span>
+                      <span class="p-text" :style="{ background: swatch(t, '--text', 'var(--text)') }"></span>
+                    </div>
+                    <span class="t-name">{{ t.name }}</span>
+                    <span v-if="appState.themeId === t.id" class="t-check">✓</span>
+                  </button>
+                  <button class="theme-card new-card" @click="createCustomTheme()">
+                    <div class="new-plus">＋</div>
+                    <span class="t-name">New from current</span>
+                  </button>
+                </div>
+
+                <!-- Editor for the selected custom theme. -->
+                <div v-if="activeCustom" class="custom-editor">
+                  <div class="editor-head">
+                    <input
+                      class="name-input"
+                      :value="activeCustom.name"
+                      @input="renameCustomTheme(activeCustom.id, ($event.target as HTMLInputElement).value)"
+                    />
+                    <div class="seg small">
+                      <button :class="{ on: activeCustom.mode === 'dark' }" @click="setCustomMode(activeCustom.id, 'dark')">Dark</button>
+                      <button :class="{ on: activeCustom.mode === 'light' }" @click="setCustomMode(activeCustom.id, 'light')">Light</button>
+                    </div>
+                    <button class="del-btn" title="Delete this theme" @click="deleteCustomTheme(activeCustom.id)">Delete</button>
+                  </div>
+                  <div class="color-grid">
+                    <label v-for="f in CUSTOM_FIELDS" :key="f.key" class="color-field">
+                      <input
+                        type="color"
+                        :value="hex(activeCustom.vars[f.key])"
+                        @input="updateCustomVar(activeCustom.id, f.key, ($event.target as HTMLInputElement).value)"
+                      />
+                      <span>{{ f.label }}</span>
+                    </label>
+                  </div>
+                </div>
+                <div v-else class="row-sub select-hint">Select a custom theme above to edit or delete it.</div>
+              </div>
+
+              <div class="theme-group">
+                <div class="group-label">Code font</div>
+                <div class="row-sub">Applies to diffs, blame and full-screen code.</div>
+
+                <div class="font-controls">
+                  <label class="fc-row">
+                    <span>Font</span>
+                    <select :value="fontStore.family" @change="setCodeFontFamily(($event.target as HTMLSelectElement).value)">
+                      <optgroup label="Bundled">
+                        <option v-for="f in CODE_FONTS" :key="f.name" :value="f.name">{{ f.name }}</option>
+                      </optgroup>
+                      <optgroup v-if="systemFontOptions.length" label="Installed on this Mac">
+                        <option v-for="f in systemFontOptions" :key="f" :value="f">{{ f }}</option>
+                      </optgroup>
+                    </select>
+                  </label>
+                  <label class="fc-row">
+                    <span>Size <b class="mono">{{ fontStore.size }}px</b></span>
+                    <input type="range" min="9" max="22" step="1" :value="fontStore.size"
+                      @input="setCodeFontSize(+($event.target as HTMLInputElement).value)" />
+                  </label>
+                  <label class="fc-row">
+                    <span>Line height <b class="mono">{{ fontStore.lineHeight.toFixed(2) }}</b></span>
+                    <input type="range" min="1.2" max="2.4" step="0.05" :value="fontStore.lineHeight"
+                      @input="setCodeLineHeight(+($event.target as HTMLInputElement).value)" />
+                  </label>
+                </div>
+
+                <div class="font-preview" :style="{ fontFamily: 'var(--code-font)', fontSize: 'var(--code-font-size)', lineHeight: 'var(--code-line-h)' }">
+                  <div><span class="pv-key">const</span> <span class="pv-fn">plumb</span> = (repo) <span class="pv-key">=&gt;</span> {</div>
+                  <div>&nbsp;&nbsp;<span class="pv-com">// a straight line through your history</span></div>
+                  <div>&nbsp;&nbsp;<span class="pv-key">return</span> repo.<span class="pv-fn">commits</span>.<span class="pv-fn">map</span>(<span class="pv-str">"→"</span>);</div>
+                  <div>}</div>
+                </div>
+                <button class="btn reset-font" @click="resetCodeFont">Reset to default</button>
               </div>
             </div>
 
@@ -97,6 +279,53 @@ const sections: { id: SettingsSection; label: string }[] = [
 .seg { display: flex; gap: 2px; margin-left: auto; }
 .seg button { padding: 7px 16px; background: var(--raised); border: 1px solid var(--line); font-size: 12.5px; font-weight: 600; color: var(--text-mid); cursor: pointer; }
 .seg button.on { background: var(--accent); color: var(--accent-on); border-color: var(--accent); }
+
+.seg.small button { padding: 5px 12px; font-size: 11.5px; }
+
+/* Appearance / themes */
+.appearance .row-sub { margin-bottom: var(--space-3); }
+.theme-group { margin-top: var(--space-4); }
+.group-label { font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint); margin-bottom: var(--space-2); }
+.theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--space-2); }
+.theme-card { position: relative; display: flex; flex-direction: column; gap: 8px; padding: 8px; background: var(--raised); border: 1px solid var(--line); cursor: pointer; text-align: left; }
+.theme-card.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.preview { height: 40px; border: 1px solid; display: flex; align-items: center; gap: 5px; padding: 0 8px; }
+.preview .p-surface { width: 16px; height: 16px; }
+.preview .p-accent { width: 16px; height: 16px; }
+.preview .p-text { width: 24px; height: 6px; margin-left: auto; }
+.t-name { font-size: 11.5px; font-weight: 600; color: var(--text); }
+.t-check { position: absolute; top: 6px; right: 8px; color: var(--accent); font-weight: 800; font-size: 12px; }
+.new-card { align-items: center; justify-content: center; border-style: dashed; color: var(--text-dim); }
+.new-card:hover { border-color: var(--accent); color: var(--accent); }
+.new-plus { height: 40px; display: flex; align-items: center; font-size: 22px; }
+.select-hint { margin-top: var(--space-3); }
+.custom-editor { margin-top: var(--space-3); border: 1px solid var(--line); padding: var(--space-3); }
+.editor-head { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-3); }
+.name-input { flex: 1; height: 30px; padding: 0 10px; background: var(--bg); border: 1px solid var(--line); color: var(--text); font-size: 13px; font-weight: 600; }
+.name-input:focus { outline: none; border-color: var(--accent); }
+.del-btn { height: 30px; padding: 0 12px; background: var(--raised); border: 1px solid var(--line); color: var(--accent); font-size: 12px; font-weight: 600; cursor: pointer; }
+.del-btn:hover { background: var(--accent); color: var(--accent-on); border-color: var(--accent); }
+.mode-row { display: flex; align-items: center; gap: var(--space-3); font-size: 12px; color: var(--text-mid); margin-bottom: var(--space-3); }
+.mode-row .seg { margin-left: auto; }
+.color-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: var(--space-2) var(--space-3); }
+.color-field { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-mid); }
+.color-field input[type="color"] { width: 30px; height: 26px; padding: 0; border: 1px solid var(--line); background: none; cursor: pointer; }
+.custom-actions { display: flex; gap: var(--space-2); margin-top: var(--space-4); }
+.custom-actions .btn { height: 30px; padding: 0 14px; background: var(--raised); border: 1px solid var(--line); font-size: 12px; color: var(--text-mid); cursor: pointer; }
+.custom-actions .btn.on { border-color: var(--accent); color: var(--text); }
+
+.font-controls { margin-top: var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); }
+.fc-row { display: flex; align-items: center; gap: var(--space-3); font-size: 12px; color: var(--text-mid); }
+.fc-row > span { width: 150px; flex: none; }
+.fc-row b { color: var(--text); }
+.fc-row select { flex: 1; height: 30px; padding: 0 8px; background: var(--bg); border: 1px solid var(--line); color: var(--text); font-size: 12.5px; }
+.fc-row input[type="range"] { flex: 1; accent-color: var(--accent); }
+.font-preview { margin-top: var(--space-4); padding: var(--space-3); background: var(--bg); border: 1px solid var(--line); color: var(--text); white-space: pre; overflow-x: auto; }
+.font-preview .pv-key { color: var(--syn-keyword, #c678dd); }
+.font-preview .pv-fn { color: var(--syn-func, #61afef); }
+.font-preview .pv-str { color: var(--syn-string, #98c379); }
+.font-preview .pv-com { color: var(--syn-comment, #7f848e); font-style: italic; }
+.reset-font { margin-top: var(--space-3); height: 30px; padding: 0 14px; background: var(--raised); border: 1px solid var(--line); font-size: 12px; color: var(--text-mid); cursor: pointer; }
 
 .about { text-align: center; padding-top: var(--space-8); }
 .about-mark { display: flex; justify-content: center; margin-bottom: var(--space-4); color: var(--text); }

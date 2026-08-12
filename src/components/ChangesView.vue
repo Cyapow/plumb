@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   workingStatus,
   stagePaths,
@@ -70,6 +70,21 @@ const conventional = ref(true); // visual toggle; drives AI drafts once wired
 const busy = ref(false);
 const error = ref<string | null>(null);
 const filesWidth = ref(360);
+
+// Composer keyboard shortcuts (active while the Changes view is mounted):
+// ⌘⏎ commits, ⌘G drafts an AI message.
+function onComposerKey(e: KeyboardEvent) {
+  if (!e.metaKey) return;
+  if (e.key === "Enter") {
+    e.preventDefault();
+    if (canCommit.value && !busy.value) doCommit();
+  } else if (e.key.toLowerCase() === "g") {
+    e.preventDefault();
+    if (!generating.value) generate();
+  }
+}
+onMounted(() => window.addEventListener("keydown", onComposerKey));
+onUnmounted(() => window.removeEventListener("keydown", onComposerKey));
 
 // AI commit messages
 const generating = ref(false);

@@ -36,4 +36,6 @@ sha2 = "0.10"
 base64 = "0.22"
 getrandom = "0.2"
 notify-debouncer-mini = "0.7.0"
+core-text = "20"
+core-foundation = "0.10"
 

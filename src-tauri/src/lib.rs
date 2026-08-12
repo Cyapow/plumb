@@ -40,6 +40,8 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .item(&mi("clone_repo", "Clone Repository…", Some("CmdOrCtrl+Shift+O"))?)
         .item(&mi("init_repo", "Initialize Repository…", Some("CmdOrCtrl+I"))?)
         .separator()
+        .item(&mi("accounts", "Connect an Account…", Some("CmdOrCtrl+N"))?)
+        .separator()
         .item(&mi("reveal", "Reveal in Finder", None)?)
         .item(&mi("terminal", "Open in Terminal", None)?)
         .build()?;
@@ -133,6 +135,7 @@ pub fn run() {
             git::is_repo,
             git::init_repo,
             git::open_in_terminal,
+            git::list_system_fonts,
             git::list_remotes,
             git::add_remote,
             git::list_commits,

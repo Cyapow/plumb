@@ -98,6 +98,11 @@
   --font-ui: "Archivo", system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
+  /* Code/diff views — overridable in Settings → Appearance for readability. */
+  --code-font: var(--font-mono);
+  --code-font-size: 12px;
+  --code-line-h: 1.7;
+
   /* Density (design: comfortable) */
   --row-commit: 34px;
   --row-sidebar: 26px;

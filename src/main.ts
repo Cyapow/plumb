@@ -1,10 +1,12 @@
 import { createApp } from "vue";
 import App from "./App.vue";
+import "./styles/fonts.css";
 import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/highlight.css";
+import { initTheme } from "./lib/ui";
 
-// Default to the hero (dark) theme.
-document.documentElement.setAttribute("data-theme", "dark");
+// Apply the saved theme (defaults to Modernist Dark) before mount to avoid a flash.
+initTheme();
 
 createApp(App).mount("#app");
