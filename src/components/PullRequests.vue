@@ -9,6 +9,11 @@ import { relativeTime } from "../lib/format";
 const props = defineProps<{ repoPath: string }>();
 const emit = defineEmits<{ (e: "create"): void }>();
 
+// Compact CI glyph: ✓ passed, ✕ failed, ● running/queued.
+function ciGlyph(status: string): string {
+  return status === "success" ? "✓" : status === "failure" ? "✕" : "●";
+}
+
 const data = ref<PrList | null>(null);
 const loading = ref(false);
 const error = ref<string | null>(null);
@@ -111,6 +116,7 @@ function iso(s: string) {
           <div class="pr-main">
             <div class="pr-title-row">
               <span class="num mono">{{ pr.provider === "gitlab" ? "!" : "#" }}{{ pr.number }}</span>
+              <span v-if="pr.ciStatus" class="ci" :class="pr.ciStatus" :title="`CI: ${pr.ciStatus}`">{{ ciGlyph(pr.ciStatus) }}</span>
               <span v-if="pr.draft" class="draft">DRAFT</span>
               <span class="pr-title">{{ pr.title }}</span>
             </div>
@@ -169,6 +175,10 @@ function iso(s: string) {
 .pr-title-row { display: flex; align-items: center; gap: var(--space-2); }
 .num { font-size: 11.5px; color: var(--text-faint); flex: none; }
 .draft { font-family: var(--font-mono); font-size: 9px; font-weight: 700; color: var(--lane-2); border: 1px solid var(--lane-2); padding: 1px 4px; flex: none; }
+.ci { flex: none; width: 15px; height: 15px; display: inline-grid; place-items: center; font-size: 10px; font-weight: 800; color: var(--accent-on); }
+.ci.success { background: var(--lane-3); }
+.ci.failure { background: var(--accent); }
+.ci.pending { background: var(--lane-2); }
 .pr-title { font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pr-sub { font-size: 11px; color: var(--text-faint); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .branch { color: var(--text-mid); }

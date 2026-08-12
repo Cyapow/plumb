@@ -74,7 +74,7 @@ import {
   refreshConnections,
   type MenuItem,
 } from "./lib/ui";
-import { listPullRequests } from "./lib/accounts";
+import { listPullRequests, listCiStatuses } from "./lib/accounts";
 import CommitGraph from "./components/CommitGraph.vue";
 import ChangesView from "./components/ChangesView.vue";
 import PullRequests from "./components/PullRequests.vue";
@@ -99,6 +99,7 @@ import CompareDialog from "./components/CompareDialog.vue";
 import SubmodulesDialog from "./components/SubmodulesDialog.vue";
 import WorktreesDialog from "./components/WorktreesDialog.vue";
 import BisectDialog from "./components/BisectDialog.vue";
+import RunPipelineDialog from "./components/RunPipelineDialog.vue";
 import InputDialog from "./components/InputDialog.vue";
 import HomePage from "./components/HomePage.vue";
 import BranchTree from "./components/BranchTree.vue";
@@ -130,6 +131,13 @@ const prSourceBranch = ref<string | null>(null);
 function openCreatePr(source?: string) {
   prSourceBranch.value = source ?? null;
   createPrOpen.value = true;
+}
+
+const runPipelineOpen = ref(false);
+const pipelineRef = ref<string | null>(null);
+function openRunPipeline(branch?: string) {
+  pipelineRef.value = branch ?? null;
+  runPipelineOpen.value = true;
 }
 
 const submodulesOpen = ref(false);
@@ -269,6 +277,21 @@ const opLabel = computed(
       state.value.state
     ] ?? "",
 );
+
+// CI status per commit sha (for graph badges). Loaded on repo open and fetch —
+// not on every refresh — to stay light on API rate limits.
+const ciMap = ref<Map<string, string>>(new Map());
+function loadCiMap(path: string) {
+  listCiStatuses(path)
+    .then((list) => (ciMap.value = new Map(list.map((c) => [c.sha, c.status]))))
+    .catch(() => (ciMap.value = new Map()));
+}
+function commitCi(id: string): string | undefined {
+  return ciMap.value.get(id);
+}
+function ciGlyph(status: string): string {
+  return status === "success" ? "✓" : status === "failure" ? "✕" : "●";
+}
 
 function loadPrCount(path: string) {
   prCount.value = null;
@@ -422,6 +445,7 @@ async function loadRepo(path: string) {
     activePath.value = r.path;
     pushRecent({ path: r.path, name: r.name, branch: r.head_branch ?? "", at: Date.now() });
     loadPrCount(r.path);
+    loadCiMap(r.path);
     loadExtras(r.path);
     watchRepo(r.path).catch(() => {}); // auto-refresh on external changes
   } catch (e) {
@@ -506,6 +530,7 @@ async function sync(fn: (path: string) => Promise<string>, label: string, gerund
   try {
     const msg = await fn(repo.value.path);
     await refresh();
+    loadCiMap(repo.value.path); // refresh CI badges after fetch/pull/push
     toast(label, msg);
   } catch (e) {
     toast(`${label} failed`, String(e), "error");
@@ -585,6 +610,7 @@ function handleMenuAction(id: string) {
     case "stash": return hasRepo ? void doStash() : undefined;
     case "remotes": return hasRepo ? void (remotesOpen.value = true) : undefined;
     case "new_pr": return hasRepo ? openCreatePr() : undefined;
+    case "run_pipeline": return hasRepo ? openRunPipeline() : undefined;
     case "reflog": return hasRepo ? void (reflogOpen.value = true) : undefined;
     case "compare": return hasRepo ? openCompare() : undefined;
     case "submodules": return hasRepo ? void (submodulesOpen.value = true) : undefined;
@@ -612,6 +638,7 @@ const paletteItems = computed<PaletteItem[]>(() => {
     { id: "a-open", label: "Open a repository…", group: "Action", action: chooseRepo },
     { id: "a-remotes", label: "Manage remotes…", group: "Action", action: () => (remotesOpen.value = true) },
     { id: "a-newpr", label: "New pull / merge request…", group: "Action", action: () => openCreatePr() },
+    { id: "a-runci", label: "Run pipeline…", group: "Action", action: () => openRunPipeline() },
     { id: "a-reflog", label: "History (reflog) — recover lost commits…", group: "Action", action: () => (reflogOpen.value = true) },
     { id: "a-compare", label: "Compare branches…", group: "Action", action: () => openCompare() },
     { id: "a-submodules", label: "Submodules…", group: "Action", action: () => (submodulesOpen.value = true) },
@@ -786,6 +813,7 @@ function branchMenu(e: MouseEvent, b: BranchInfo) {
     },
     { separator: true, label: "" },
     { label: `Compare ${b.name} with ${head}`, disabled: b.is_head, action: () => openCompare(b.name) },
+    { label: "Run pipeline for this branch…", action: () => openRunPipeline(b.is_remote ? b.name.split("/").slice(1).join("/") : b.name) },
     { label: "Create pull request…", action: () => openCreatePr(b.is_remote ? b.name.split("/").slice(1).join("/") : b.name) },
     { label: "Copy name", action: () => copy(b.name, "Branch name") },
     { separator: true, label: "" },
@@ -1244,6 +1272,13 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
               <span class="cell-graph"></span>
               <div class="cell-commit">
                 <span
+                  v-if="commitCi(c.id)"
+                  class="ci-badge"
+                  :class="commitCi(c.id)"
+                  :title="`CI: ${commitCi(c.id)}`"
+                  >{{ ciGlyph(commitCi(c.id)!) }}</span
+                >
+                <span
                   v-for="r in pillRefs(c)"
                   :key="r"
                   class="ref-pill mono"
@@ -1315,6 +1350,14 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
       :branches="localBranches.map((b) => b.name)"
       :current-branch="repo.head_branch"
       :preset-base="compareBase"
+    />
+    <RunPipelineDialog
+      v-if="repo"
+      v-model="runPipelineOpen"
+      :repo-path="repo.path"
+      :branches="localBranches.map((b) => b.name)"
+      :current-branch="pipelineRef ?? repo.head_branch"
+      @triggered="() => repo && loadCiMap(repo.path)"
     />
     <SubmodulesDialog v-if="repo" v-model="submodulesOpen" :repo-path="repo.path" @open="loadRepo" />
     <WorktreesDialog v-if="repo" v-model="worktreesOpen" :repo-path="repo.path" :branches="localBranches.map((b) => b.name)" @open="loadRepo" />
@@ -1647,6 +1690,10 @@ kbd {
 .commit-row.selected { background: var(--raised); box-shadow: inset 2px 0 0 var(--accent); }
 
 .cell-commit { display: flex; align-items: center; gap: var(--space-2); min-width: 0; overflow: hidden; }
+.ci-badge { flex: none; width: 15px; height: 15px; display: inline-grid; place-items: center; font-size: 9.5px; font-weight: 800; color: var(--accent-on); }
+.ci-badge.success { background: var(--lane-3); }
+.ci-badge.failure { background: var(--accent); }
+.ci-badge.pending { background: var(--lane-2); }
 .summary { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .summary.merge { font-weight: 600; }
 .ref-pill {

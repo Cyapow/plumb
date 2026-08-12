@@ -71,6 +71,8 @@ export interface PullRequest {
   provider: string;
   assignees: string[];
   reviewers: string[];
+  ciStatus: string; // "success" | "failure" | "pending" | ""
+  headSha: string;
 }
 
 export interface PrList {
@@ -83,6 +85,25 @@ export interface PrList {
 
 export function listPullRequests(repoPath: string): Promise<PrList> {
   return invoke("list_pull_requests", { repoPath });
+}
+
+export interface CiStatus {
+  sha: string;
+  status: string; // "success" | "failure" | "pending"
+}
+export function listCiStatuses(repoPath: string): Promise<CiStatus[]> {
+  return invoke("list_ci_statuses", { repoPath });
+}
+
+export interface WorkflowRef {
+  id: string;
+  name: string;
+}
+export function listWorkflows(repoPath: string): Promise<WorkflowRef[]> {
+  return invoke("list_workflows", { repoPath });
+}
+export function triggerPipeline(repoPath: string, gitRef: string, workflowId?: string): Promise<string> {
+  return invoke("trigger_pipeline", { repoPath, gitRef, workflowId: workflowId ?? null });
 }
 
 export interface PrTarget {
