@@ -4,6 +4,7 @@
 //! one-account-per-provider model. Each connection's token lives in the macOS
 //! Keychain; only non-secret metadata (provider, host, username) is persisted.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -472,6 +473,10 @@ pub struct PullRequest {
     pub provider: String,
     pub assignees: Vec<String>,
     pub reviewers: Vec<String>,
+    /// Rolled-up CI status of the head commit: "success" | "failure" |
+    /// "pending" | "" (none/unknown).
+    pub ci_status: String,
+    pub head_sha: String,
 }
 
 #[derive(Serialize)]
@@ -607,6 +612,265 @@ pub async fn list_pull_requests(app: AppHandle, repo_path: String) -> Result<PrL
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CiStatus {
+    pub sha: String,
+    pub status: String, // "success" | "failure" | "pending"
+}
+
+/// Recent CI results keyed by commit SHA, for badges in the graph. One batched
+/// call per provider (workflow runs / pipelines), not one per commit.
+#[tauri::command]
+pub async fn list_ci_statuses(app: AppHandle, repo_path: String) -> Result<Vec<CiStatus>> {
+    let cfg = load(&app)?;
+    let mut remotes = repo_remotes(&repo_path);
+    remotes.sort_by_key(|(n, _)| if n == "origin" { 0 } else { 1 });
+    for (_, url) in &remotes {
+        if let Some((host, path)) = parse_remote(url) {
+            if let Some(conn) = cfg.connections.iter().find(|c| conn_web_host(c) == host) {
+                let token = read_token(&conn.id)?;
+                let (provider, base) = (conn.provider.clone(), conn.base_url.clone());
+                return tauri::async_runtime::spawn_blocking(move || match provider.as_str() {
+                    "github" => Ok(github_ci_map(&base, &token, &path)),
+                    "gitlab" => Ok(gitlab_ci_map(&base, &token, &urlencode(&path))),
+                    _ => Ok(Vec::new()),
+                })
+                .await
+                .map_err(|e| AccountError::Msg(e.to_string()))?;
+            }
+        }
+    }
+    Ok(Vec::new())
+}
+
+fn roll(pending: bool, fail: bool, success: bool) -> Option<String> {
+    if pending {
+        Some("pending".into())
+    } else if fail {
+        Some("failure".into())
+    } else if success {
+        Some("success".into())
+    } else {
+        None
+    }
+}
+
+fn github_ci_map(base: &str, token: &str, owner_repo: &str) -> Vec<CiStatus> {
+    // (pending, fail, success) accumulated per head_sha across workflow runs.
+    let mut acc: HashMap<String, (bool, bool, bool)> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for page in 1..=2 {
+        let url = format!(
+            "{}/repos/{}/actions/runs?per_page=100&page={page}",
+            base.trim_end_matches('/'),
+            owner_repo
+        );
+        let json: serde_json::Value = match ureq::get(&url)
+            .set("authorization", &format!("Bearer {token}"))
+            .set("user-agent", "Plumb")
+            .set("accept", "application/vnd.github+json")
+            .timeout(Duration::from_secs(20))
+            .call()
+        {
+            Ok(r) => match r.into_json() {
+                Ok(j) => j,
+                Err(_) => break,
+            },
+            Err(_) => break,
+        };
+        let runs = json["workflow_runs"].as_array().cloned().unwrap_or_default();
+        if runs.is_empty() {
+            break;
+        }
+        for r in &runs {
+            let sha = r["head_sha"].as_str().unwrap_or("").to_string();
+            if sha.is_empty() {
+                continue;
+            }
+            let e = acc.entry(sha.clone()).or_insert_with(|| {
+                order.push(sha.clone());
+                (false, false, false)
+            });
+            if r["status"].as_str().unwrap_or("") != "completed" {
+                e.0 = true;
+            } else {
+                match r["conclusion"].as_str().unwrap_or("") {
+                    "failure" | "timed_out" | "cancelled" | "action_required" | "startup_failure" => e.1 = true,
+                    "success" => e.2 = true,
+                    _ => {}
+                }
+            }
+        }
+        if runs.len() < 100 {
+            break;
+        }
+    }
+    order
+        .into_iter()
+        .filter_map(|sha| acc.get(&sha).and_then(|&(p, f, s)| roll(p, f, s)).map(|status| CiStatus { sha, status }))
+        .collect()
+}
+
+fn gitlab_ci_map(base: &str, token: &str, project_enc: &str) -> Vec<CiStatus> {
+    let mut out = Vec::new();
+    let mut seen: HashMap<String, ()> = HashMap::new();
+    for page in 1..=2 {
+        let url = format!(
+            "{}/api/v4/projects/{}/pipelines?per_page=100&page={page}",
+            base.trim_end_matches('/'),
+            project_enc
+        );
+        let arr: Vec<serde_json::Value> = match ureq::get(&url)
+            .set("authorization", &format!("Bearer {token}"))
+            .timeout(Duration::from_secs(20))
+            .call()
+        {
+            Ok(r) => match r.into_json() {
+                Ok(j) => j,
+                Err(_) => break,
+            },
+            Err(_) => break,
+        };
+        if arr.is_empty() {
+            break;
+        }
+        for p in &arr {
+            let sha = p["sha"].as_str().unwrap_or("").to_string();
+            if sha.is_empty() || seen.contains_key(&sha) {
+                continue; // pipelines are newest-first, so keep the first per sha
+            }
+            let status = match p["status"].as_str().unwrap_or("") {
+                "success" => "success",
+                "failed" => "failure",
+                "running" | "pending" | "created" | "waiting_for_resource" | "preparing" | "scheduled" => "pending",
+                _ => continue,
+            };
+            seen.insert(sha.clone(), ());
+            out.push(CiStatus { sha, status: status.into() });
+        }
+        if arr.len() < 100 {
+            break;
+        }
+    }
+    out
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRef {
+    pub id: String,
+    pub name: String,
+}
+
+/// GitHub Actions workflows (so the user can pick one to dispatch). Empty for
+/// GitLab, where a pipeline is defined by .gitlab-ci.yml and needs no choice.
+#[tauri::command]
+pub async fn list_workflows(app: AppHandle, repo_path: String) -> Result<Vec<WorkflowRef>> {
+    let cfg = load(&app)?;
+    let mut remotes = repo_remotes(&repo_path);
+    remotes.sort_by_key(|(n, _)| if n == "origin" { 0 } else { 1 });
+    for (_, url) in &remotes {
+        if let Some((host, path)) = parse_remote(url) {
+            if let Some(conn) = cfg.connections.iter().find(|c| conn_web_host(c) == host) {
+                if conn.provider != "github" {
+                    return Ok(Vec::new());
+                }
+                let token = read_token(&conn.id)?;
+                let base = conn.base_url.clone();
+                return tauri::async_runtime::spawn_blocking(move || github_workflows(&base, &token, &path))
+                    .await
+                    .map_err(|e| AccountError::Msg(e.to_string()))?;
+            }
+        }
+    }
+    Ok(Vec::new())
+}
+
+fn github_workflows(base: &str, token: &str, owner_repo: &str) -> Result<Vec<WorkflowRef>> {
+    let url = format!("{}/repos/{}/actions/workflows?per_page=100", base.trim_end_matches('/'), owner_repo);
+    let json: serde_json::Value = ureq::get(&url)
+        .set("authorization", &format!("Bearer {token}"))
+        .set("user-agent", "Plumb")
+        .set("accept", "application/vnd.github+json")
+        .timeout(Duration::from_secs(20))
+        .call()
+        .map_err(|e| http_err("Couldn't list workflows", e))?
+        .into_json()?;
+    Ok(json["workflows"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|w| w["state"].as_str().unwrap_or("") == "active")
+                .map(|w| WorkflowRef {
+                    id: w["id"].as_u64().map(|n| n.to_string()).unwrap_or_default(),
+                    name: w["name"].as_str().unwrap_or("").to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// Kick off a pipeline. GitHub dispatches `workflow_id` on `git_ref` (the
+/// workflow must declare `workflow_dispatch`); GitLab runs a pipeline on `git_ref`.
+#[tauri::command]
+pub async fn trigger_pipeline(
+    app: AppHandle,
+    repo_path: String,
+    git_ref: String,
+    workflow_id: Option<String>,
+) -> Result<String> {
+    let cfg = load(&app)?;
+    let mut remotes = repo_remotes(&repo_path);
+    remotes.sort_by_key(|(n, _)| if n == "origin" { 0 } else { 1 });
+    for (_, url) in &remotes {
+        if let Some((host, path)) = parse_remote(url) {
+            if let Some(conn) = cfg.connections.iter().find(|c| conn_web_host(c) == host) {
+                let token = read_token(&conn.id)?;
+                let (provider, base) = (conn.provider.clone(), conn.base_url.clone());
+                return tauri::async_runtime::spawn_blocking(move || match provider.as_str() {
+                    "github" => github_dispatch(&base, &token, &path, &git_ref, workflow_id.as_deref()),
+                    "gitlab" => gitlab_trigger(&base, &token, &urlencode(&path), &git_ref),
+                    _ => Err(AccountError::Msg("Unsupported provider.".into())),
+                })
+                .await
+                .map_err(|e| AccountError::Msg(e.to_string()))?;
+            }
+        }
+    }
+    Err(AccountError::Msg("No connected account matches this repository's remote.".into()))
+}
+
+fn github_dispatch(base: &str, token: &str, owner_repo: &str, git_ref: &str, workflow_id: Option<&str>) -> Result<String> {
+    let wid = workflow_id.ok_or_else(|| AccountError::Msg("Pick a workflow to run.".into()))?;
+    let url = format!(
+        "{}/repos/{}/actions/workflows/{}/dispatches",
+        base.trim_end_matches('/'),
+        owner_repo,
+        wid
+    );
+    // 204 No Content on success — don't parse a body.
+    ureq::post(&url)
+        .set("authorization", &format!("Bearer {token}"))
+        .set("user-agent", "Plumb")
+        .set("accept", "application/vnd.github+json")
+        .timeout(Duration::from_secs(20))
+        .send_json(serde_json::json!({ "ref": git_ref }))
+        .map_err(|e| http_err("Couldn't start the workflow (does it allow manual runs?)", e))?;
+    Ok(format!("Workflow dispatched on {git_ref}"))
+}
+
+fn gitlab_trigger(base: &str, token: &str, project_enc: &str, git_ref: &str) -> Result<String> {
+    let url = format!("{}/api/v4/projects/{}/pipeline", base.trim_end_matches('/'), project_enc);
+    let json: serde_json::Value = ureq::post(&url)
+        .set("authorization", &format!("Bearer {token}"))
+        .timeout(Duration::from_secs(20))
+        .send_json(serde_json::json!({ "ref": git_ref }))
+        .map_err(|e| http_err("Couldn't start the pipeline", e))?
+        .into_json()?;
+    Ok(format!("Pipeline #{} started", json["id"].as_u64().unwrap_or(0)))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreatedPr {
     pub url: String,
     pub number: u64,
@@ -731,7 +995,7 @@ fn github_prs(base: &str, token: &str, owner_repo: &str) -> Result<Vec<PullReque
         .call()
         .map_err(|e| http_err("Couldn't load pull requests", e))?
         .into_json()?;
-    Ok(json
+    let mut prs: Vec<PullRequest> = json
         .as_array()
         .map(|arr| {
             arr.iter()
@@ -748,10 +1012,78 @@ fn github_prs(base: &str, token: &str, owner_repo: &str) -> Result<Vec<PullReque
                     provider: "github".to_string(),
                     assignees: usernames(p, "assignees", "login"),
                     reviewers: usernames(p, "requested_reviewers", "login"),
+                    ci_status: String::new(),
+                    head_sha: p["head"]["sha"].as_str().unwrap_or("").to_string(),
                 })
                 .collect()
         })
-        .unwrap_or_default())
+        .unwrap_or_default();
+
+    // Fetch each head commit's check-run rollup concurrently (best-effort).
+    std::thread::scope(|s| {
+        let handles: Vec<_> = prs
+            .iter()
+            .map(|pr| {
+                let sha = pr.head_sha.clone();
+                s.spawn(move || github_check_rollup(base, token, owner_repo, &sha))
+            })
+            .collect();
+        for (pr, h) in prs.iter_mut().zip(handles) {
+            pr.ci_status = h.join().unwrap_or_default();
+        }
+    });
+    Ok(prs)
+}
+
+/// Roll up a commit's GitHub check runs to one status word.
+fn github_check_rollup(base: &str, token: &str, owner_repo: &str, sha: &str) -> String {
+    if sha.is_empty() {
+        return String::new();
+    }
+    let url = format!(
+        "{}/repos/{}/commits/{}/check-runs",
+        base.trim_end_matches('/'),
+        owner_repo,
+        sha
+    );
+    let json: serde_json::Value = match ureq::get(&url)
+        .set("authorization", &format!("Bearer {token}"))
+        .set("user-agent", "Plumb")
+        .set("accept", "application/vnd.github+json")
+        .timeout(Duration::from_secs(15))
+        .call()
+    {
+        Ok(r) => match r.into_json() {
+            Ok(j) => j,
+            Err(_) => return String::new(),
+        },
+        Err(_) => return String::new(),
+    };
+    let runs = match json["check_runs"].as_array() {
+        Some(a) if !a.is_empty() => a,
+        _ => return String::new(),
+    };
+    let (mut pending, mut fail, mut success) = (false, false, false);
+    for r in runs {
+        if r["status"].as_str().unwrap_or("") != "completed" {
+            pending = true;
+        } else {
+            match r["conclusion"].as_str().unwrap_or("") {
+                "failure" | "timed_out" | "cancelled" | "action_required" | "startup_failure" => fail = true,
+                "success" => success = true,
+                _ => {}
+            }
+        }
+    }
+    if pending {
+        "pending".into()
+    } else if fail {
+        "failure".into()
+    } else if success {
+        "success".into()
+    } else {
+        String::new()
+    }
 }
 
 fn gitlab_mrs(base: &str, token: &str, project: &str) -> Result<Vec<PullRequest>> {
@@ -767,7 +1099,7 @@ fn gitlab_mrs(base: &str, token: &str, project: &str) -> Result<Vec<PullRequest>
         .call()
         .map_err(|e| http_err("Couldn't load merge requests", e))?
         .into_json()?;
-    Ok(json
+    let mut mrs: Vec<PullRequest> = json
         .as_array()
         .map(|arr| {
             arr.iter()
@@ -784,10 +1116,58 @@ fn gitlab_mrs(base: &str, token: &str, project: &str) -> Result<Vec<PullRequest>
                     provider: "gitlab".to_string(),
                     assignees: usernames(m, "assignees", "username"),
                     reviewers: usernames(m, "reviewers", "username"),
+                    ci_status: String::new(),
+                    head_sha: m["sha"].as_str().unwrap_or("").to_string(),
                 })
                 .collect()
         })
-        .unwrap_or_default())
+        .unwrap_or_default();
+
+    let enc = urlencode(project);
+    std::thread::scope(|s| {
+        let handles: Vec<_> = mrs
+            .iter()
+            .map(|mr| {
+                let sha = mr.head_sha.clone();
+                let enc = enc.clone();
+                s.spawn(move || gitlab_pipeline_status(base, token, &enc, &sha))
+            })
+            .collect();
+        for (mr, h) in mrs.iter_mut().zip(handles) {
+            mr.ci_status = h.join().unwrap_or_default();
+        }
+    });
+    Ok(mrs)
+}
+
+/// Latest pipeline status for a commit on GitLab, mapped to one status word.
+fn gitlab_pipeline_status(base: &str, token: &str, project_enc: &str, sha: &str) -> String {
+    if sha.is_empty() {
+        return String::new();
+    }
+    let url = format!(
+        "{}/api/v4/projects/{}/pipelines?sha={}&per_page=1",
+        base.trim_end_matches('/'),
+        project_enc,
+        sha
+    );
+    let json: serde_json::Value = match ureq::get(&url)
+        .set("authorization", &format!("Bearer {token}"))
+        .timeout(Duration::from_secs(15))
+        .call()
+    {
+        Ok(r) => match r.into_json() {
+            Ok(j) => j,
+            Err(_) => return String::new(),
+        },
+        Err(_) => return String::new(),
+    };
+    match json.as_array().and_then(|a| a.first()).and_then(|p| p["status"].as_str()).unwrap_or("") {
+        "success" => "success".into(),
+        "failed" => "failure".into(),
+        "running" | "pending" | "created" | "waiting_for_resource" | "preparing" | "scheduled" => "pending".into(),
+        _ => String::new(),
+    }
 }
 
 /* ── Repository listing (for Clone) ───────────────────────────────── */

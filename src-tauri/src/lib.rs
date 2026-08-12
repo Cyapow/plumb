@@ -75,6 +75,7 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .item(&mi("stash", "Stash All Changes", Some("CmdOrCtrl+Shift+S"))?)
         .separator()
         .item(&mi("new_pr", "New Pull / Merge Request…", None)?)
+        .item(&mi("run_pipeline", "Run Pipeline…", None)?)
         .item(&mi("compare", "Compare Branches…", None)?)
         .item(&mi("reflog", "History (Reflog)…", None)?)
         .item(&mi("remotes", "Manage Remotes…", None)?)
@@ -239,6 +240,9 @@ pub fn run() {
             accounts::github_device_poll,
             accounts::gitlab_oauth_login,
             accounts::list_pull_requests,
+            accounts::list_ci_statuses,
+            accounts::list_workflows,
+            accounts::trigger_pipeline,
             accounts::pr_target,
             accounts::create_pull_request,
             accounts::list_account_repos,
