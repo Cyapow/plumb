@@ -114,12 +114,18 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
         .manage(watcher::WatchState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_decorum::init())
+        .plugin(tauri_plugin_notification::init());
+    // Window-chrome tweaks (traffic-light inset / snap overlay) — macOS + Windows.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        builder = builder.plugin(tauri_plugin_decorum::init());
+    }
+    builder
         .setup(|app| {
             // Vertically centre the macOS traffic lights in our 52px header, and
             // keep them there across show/resize (which macOS otherwise resets).

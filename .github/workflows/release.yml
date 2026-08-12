@@ -1,29 +1,50 @@
 name: Release
 
-# Build and publish a macOS release when a version tag is pushed. Cut one with
-# `npm run release -- <patch|minor|major>`, which bumps the manifests and pushes
-# the plumb-vX.Y.Z tag that triggers this workflow. (workflow_dispatch lets you
-# re-run a build for the current version manually.)
+# Build and publish native installers for macOS, Windows, and Linux when a
+# version tag is pushed. Cut one with `npm run release -- <patch|minor|major>`.
 on:
   push:
     tags:
       - "plumb-v*"
   workflow_dispatch:
 
-# Needed so the workflow can create releases and upload build assets.
 permissions:
   contents: write
 
-# Don't run two release builds at once for the same branch.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   release:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS: one universal (Apple Silicon + Intel) build, ad-hoc signed.
+          - platform: macos-latest
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
+            args: "--target universal-apple-darwin --config '{\"bundle\":{\"macOS\":{\"signingIdentity\":\"-\"}}}'"
+          - platform: ubuntu-22.04
+            targets: ""
+            args: "--bundles deb,appimage"
+          - platform: windows-latest
+            targets: ""
+            args: ""
+    runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            patchelf
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -31,10 +52,10 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Set up Rust (both macOS arches for a universal build)
+      - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: ${{ matrix.targets }}
 
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
@@ -52,22 +73,12 @@ jobs:
           tagName: plumb-v__VERSION__
           releaseName: Plumb v__VERSION__
           releaseBody: |
-            Automated **universal** macOS build (Apple Silicon + Intel) from `${{ github.sha }}`.
+            Automated build of Plumb v__VERSION__ for **macOS (universal), Windows, and Linux**.
 
-            This build is **not notarized by Apple**, so macOS Gatekeeper blocks it on first launch.
-            To open it:
-
-            1. Move **Plumb.app** to `/Applications`.
-            2. Try to open it once (you'll see "Plumb Not Opened").
-            3. Go to **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**.
-
-            Or, from Terminal, clear the quarantine flag:
-            ```
-            xattr -dr com.apple.quarantine /Applications/Plumb.app
-            ```
+            These builds are **unsigned / not notarized**, so each OS will warn on first run:
+            - **macOS:** System Settings → Privacy & Security → *Open Anyway* (or `xattr -dr com.apple.quarantine /Applications/Plumb.app`).
+            - **Windows:** SmartScreen → *More info* → *Run anyway*.
+            - **Linux:** mark the AppImage executable (`chmod +x`) or install the `.deb`.
           releaseDraft: false
           prerelease: false
-          # Universal (Apple Silicon + Intel). The inline --config forces ad-hoc
-          # signing so CI doesn't try to use the local "Plumb Local Dev" cert,
-          # which only exists on the developer's machine.
-          args: --target universal-apple-darwin --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}'
+          args: ${{ matrix.args }}

@@ -1549,44 +1549,50 @@ pub async fn initial_commit(path: String, message: String) -> Result<String> {
     .await
 }
 
-/// Open the repo folder in the system terminal (macOS: Terminal.app).
+fn ran_ok(cmd: &mut std::process::Command) -> bool {
+    cmd.status().map(|s| s.success()).unwrap_or(false)
+}
+
+/// Open the repo folder in the system terminal.
 #[tauri::command]
 pub fn open_in_terminal(path: String) -> Result<()> {
     #[cfg(target_os = "macos")]
-    let status = std::process::Command::new("open").args(["-a", "Terminal", &path]).status();
-    #[cfg(not(target_os = "macos"))]
-    let status = std::process::Command::new("x-terminal-emulator").current_dir(&path).status();
-    status
-        .map_err(|e| GitError::Message(format!("Couldn't open terminal: {e}")))
-        .and_then(|s| {
-            if s.success() {
-                Ok(())
-            } else {
-                Err(GitError::Message("Terminal exited with an error.".into()))
-            }
-        })
+    let ok = ran_ok(std::process::Command::new("open").args(["-a", "Terminal", &path]));
+    #[cfg(target_os = "windows")]
+    let ok = ran_ok(std::process::Command::new("cmd").args(["/C", "start", "cmd"]).current_dir(&path));
+    #[cfg(target_os = "linux")]
+    let ok = ran_ok(std::process::Command::new("x-terminal-emulator").current_dir(&path))
+        || ran_ok(std::process::Command::new("gnome-terminal").current_dir(&path));
+    if ok {
+        Ok(())
+    } else {
+        Err(GitError::Message("Couldn't open a terminal.".into()))
+    }
 }
 
-/// Open the repo (or a file) in an editor — VS Code if present, else the
-/// default app.
+/// Open the repo (or a file) in an editor — VS Code if present, else the OS default.
 #[tauri::command]
 pub fn open_in_editor(path: String) -> Result<()> {
+    // `code` is rarely on a GUI-launched app's PATH on macOS, so use `open -a`
+    // there; on Windows/Linux `code` is usually available.
     #[cfg(target_os = "macos")]
     {
-        let vscode = std::process::Command::new("open")
-            .args(["-a", "Visual Studio Code", &path])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !vscode {
-            std::process::Command::new("open")
-                .arg(&path)
-                .status()
-                .map_err(|e| GitError::Message(format!("Couldn't open: {e}")))?;
+        if !ran_ok(std::process::Command::new("open").args(["-a", "Visual Studio Code", &path])) {
+            ran_ok(std::process::Command::new("open").arg(&path));
         }
     }
-    #[cfg(not(target_os = "macos"))]
-    let _ = path;
+    #[cfg(target_os = "windows")]
+    {
+        if !ran_ok(std::process::Command::new("code").arg(&path)) {
+            ran_ok(std::process::Command::new("cmd").args(["/C", "start", "", &path]));
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if !ran_ok(std::process::Command::new("code").arg(&path)) {
+            ran_ok(std::process::Command::new("xdg-open").arg(&path));
+        }
+    }
     Ok(())
 }
 
@@ -1631,7 +1637,9 @@ pub async fn reword_commit(path: String, id: String, message: String) -> Result<
         let tmp = std::env::temp_dir().join(format!("plumb-reword-{}.txt", std::process::id()));
         std::fs::write(&tmp, message.trim_end())
             .map_err(|e| GitError::Message(format!("Couldn't stage message: {e}")))?;
-        let seq_editor = format!("sed -i '' -e 's/^pick {short}/reword {short}/'");
+        // perl -i is portable (BSD sed's `-i ''` is not); flips this commit's
+        // pick line to reword in the todo git hands us.
+        let seq_editor = format!("perl -i -pe 's/^pick {short}/reword {short}/'");
         let msg_editor = format!("cp {}", tmp.display());
         let base = format!("{id}^");
 
