@@ -114,7 +114,7 @@ function pickedInHunk(hi: number): number[] {
 <style scoped>
 .diff { height: 100%; overflow: auto; background: var(--bg); }
 .empty { padding: var(--space-6); color: var(--text-faint); font-size: 12.5px; }
-.hunks { font-size: 12px; line-height: var(--diff-line-h); }
+.hunks { font-family: var(--code-font); font-size: var(--code-font-size); line-height: var(--code-line-h); }
 .hunk-head {
   display: flex; align-items: center; gap: var(--space-3);
   padding: 0 var(--space-2) 0 var(--space-4);

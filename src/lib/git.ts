@@ -54,6 +54,9 @@ export function initRepo(path: string, branch?: string): Promise<void> {
 export function openInTerminal(path: string): Promise<void> {
   return invoke("open_in_terminal", { path });
 }
+export function listSystemFonts(): Promise<string[]> {
+  return invoke("list_system_fonts");
+}
 
 export interface RemoteInfo {
   name: string;

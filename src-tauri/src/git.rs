@@ -1415,6 +1415,28 @@ pub fn open_in_terminal(path: String) -> Result<()> {
         })
 }
 
+/// List installed font family names (macOS CoreText), sorted, with Apple's
+/// hidden system fonts (leading ".") filtered out.
+#[tauri::command]
+pub fn list_system_fonts() -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let names = core_text::font_manager::copy_available_font_family_names();
+        let mut out: Vec<String> = names
+            .iter()
+            .map(|n| n.to_string())
+            .filter(|s| !s.starts_with('.'))
+            .collect();
+        out.sort_by_key(|s| s.to_lowercase());
+        out.dedup();
+        out
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Vec::new()
+    }
+}
+
 /// List branch names on a remote URL without cloning (`git ls-remote --heads`).
 /// Best-effort: fails fast if the remote needs credentials we can't supply.
 #[tauri::command]

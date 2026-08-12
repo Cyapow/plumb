@@ -102,7 +102,7 @@ const hl = (s: string) => highlightLine(s, lang());
 .hc-msg { flex: 1; font-size: 13px; }
 .hc-meta { font-size: 10.5px; color: var(--text-faint); flex: none; }
 
-.blame { font-size: 12px; line-height: 20px; }
+.blame { font-family: var(--code-font); font-size: var(--code-font-size); line-height: var(--code-line-h); }
 .bl { display: flex; align-items: baseline; }
 .bl-commit { width: 64px; flex: none; padding-left: var(--space-3); color: var(--accent); }
 .bl-author { width: 120px; flex: none; color: var(--text-faint); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
