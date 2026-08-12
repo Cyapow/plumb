@@ -605,6 +605,118 @@ pub async fn list_pull_requests(app: AppHandle, repo_path: String) -> Result<PrL
     })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedPr {
+    pub url: String,
+    pub number: u64,
+    pub provider: String,
+}
+
+/// Which provider (and label) a repo's remote maps to, so the UI can say
+/// "pull request" vs "merge request" and default the target branch.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrTarget {
+    /// "github" | "gitlab" | "" (no matching account)
+    pub provider: String,
+    pub host: String,
+    pub repo: String,
+}
+
+/// Resolve the repo's origin to a connected provider (for the create-PR dialog).
+#[tauri::command]
+pub fn pr_target(app: AppHandle, repo_path: String) -> Result<PrTarget> {
+    let cfg = load(&app)?;
+    let mut remotes = repo_remotes(&repo_path);
+    remotes.sort_by_key(|(n, _)| if n == "origin" { 0 } else { 1 });
+    for (_, url) in &remotes {
+        if let Some((host, path)) = parse_remote(url) {
+            if let Some(conn) = cfg.connections.iter().find(|c| conn_web_host(c) == host) {
+                return Ok(PrTarget { provider: conn.provider.clone(), host, repo: path });
+            }
+        }
+    }
+    Ok(PrTarget { provider: String::new(), host: String::new(), repo: String::new() })
+}
+
+/// Open a pull request (GitHub) or merge request (GitLab) for the repo's remote.
+#[tauri::command]
+pub async fn create_pull_request(
+    app: AppHandle,
+    repo_path: String,
+    source_branch: String,
+    target_branch: String,
+    title: String,
+    body: String,
+    draft: bool,
+) -> Result<CreatedPr> {
+    let cfg = load(&app)?;
+    let mut remotes = repo_remotes(&repo_path);
+    remotes.sort_by_key(|(n, _)| if n == "origin" { 0 } else { 1 });
+    for (_, url) in &remotes {
+        if let Some((host, path)) = parse_remote(url) {
+            if let Some(conn) = cfg.connections.iter().find(|c| conn_web_host(c) == host) {
+                let token = read_token(&conn.id)?;
+                let (provider, base) = (conn.provider.clone(), conn.base_url.clone());
+                return tauri::async_runtime::spawn_blocking(move || match provider.as_str() {
+                    "github" => github_create_pr(&base, &token, &path, &source_branch, &target_branch, &title, &body, draft),
+                    "gitlab" => gitlab_create_mr(&base, &token, &path, &source_branch, &target_branch, &title, &body, draft),
+                    _ => Err(AccountError::Msg("Unsupported provider.".into())),
+                })
+                .await
+                .map_err(|e| AccountError::Msg(e.to_string()))?;
+            }
+        }
+    }
+    Err(AccountError::Msg("No connected account matches this repository's remote.".into()))
+}
+
+fn github_create_pr(
+    base: &str, token: &str, owner_repo: &str,
+    head: &str, base_branch: &str, title: &str, body: &str, draft: bool,
+) -> Result<CreatedPr> {
+    let url = format!("{}/repos/{}/pulls", base.trim_end_matches('/'), owner_repo);
+    let json: serde_json::Value = ureq::post(&url)
+        .set("authorization", &format!("Bearer {token}"))
+        .set("user-agent", "Plumb")
+        .set("accept", "application/vnd.github+json")
+        .timeout(Duration::from_secs(20))
+        .send_json(serde_json::json!({
+            "title": title, "head": head, "base": base_branch, "body": body, "draft": draft
+        }))
+        .map_err(|e| http_err("Couldn't create pull request", e))?
+        .into_json()?;
+    Ok(CreatedPr {
+        url: json["html_url"].as_str().unwrap_or("").to_string(),
+        number: json["number"].as_u64().unwrap_or(0),
+        provider: "github".into(),
+    })
+}
+
+fn gitlab_create_mr(
+    base: &str, token: &str, project_path: &str,
+    source: &str, target: &str, title: &str, body: &str, draft: bool,
+) -> Result<CreatedPr> {
+    // GitLab wants the project path URL-encoded; drafts are marked by title prefix.
+    let enc = project_path.replace('/', "%2F");
+    let url = format!("{}/api/v4/projects/{}/merge_requests", base.trim_end_matches('/'), enc);
+    let title = if draft { format!("Draft: {title}") } else { title.to_string() };
+    let json: serde_json::Value = ureq::post(&url)
+        .set("authorization", &format!("Bearer {token}"))
+        .timeout(Duration::from_secs(20))
+        .send_json(serde_json::json!({
+            "source_branch": source, "target_branch": target, "title": title, "description": body
+        }))
+        .map_err(|e| http_err("Couldn't create merge request", e))?
+        .into_json()?;
+    Ok(CreatedPr {
+        url: json["web_url"].as_str().unwrap_or("").to_string(),
+        number: json["iid"].as_u64().unwrap_or(0),
+        provider: "gitlab".into(),
+    })
+}
+
 fn github_prs(base: &str, token: &str, owner_repo: &str) -> Result<Vec<PullRequest>> {
     let url = format!(
         "{}/repos/{}/pulls?state=open&per_page=50&sort=updated&direction=desc",

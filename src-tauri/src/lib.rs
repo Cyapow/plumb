@@ -74,7 +74,14 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .item(&mi("new_branch", "New Branch…", Some("CmdOrCtrl+B"))?)
         .item(&mi("stash", "Stash All Changes", Some("CmdOrCtrl+Shift+S"))?)
         .separator()
+        .item(&mi("new_pr", "New Pull / Merge Request…", None)?)
+        .item(&mi("compare", "Compare Branches…", None)?)
+        .item(&mi("reflog", "History (Reflog)…", None)?)
         .item(&mi("remotes", "Manage Remotes…", None)?)
+        .separator()
+        .item(&mi("submodules", "Submodules…", None)?)
+        .item(&mi("worktrees", "Worktrees…", None)?)
+        .item(&mi("bisect", "Bisect…", None)?)
         .build()?;
 
     let window_menu = SubmenuBuilder::new(app, "Window")
@@ -164,6 +171,7 @@ pub fn run() {
             git::op_abort,
             git::op_continue,
             git::repo_state,
+            git::reflog,
             git::list_conflicts,
             git::conflict_sides,
             git::resolve_conflict,
@@ -179,6 +187,9 @@ pub fn run() {
             git::uncommit,
             git::commit_details,
             git::commit_file_diff,
+            git::compare_refs,
+            git::compare_file_diff,
+            git::search_commits,
             git::checkout_branch,
             git::checkout_remote_branch,
             git::checkout_commit,
@@ -190,9 +201,19 @@ pub fn run() {
             git::pull,
             git::push,
             git::push_advanced,
+            git::push_branch,
             git::pull_mode,
             git::rebase_interactive,
             git::delete_remote_branch,
+            git::list_submodules,
+            git::update_submodules,
+            git::list_worktrees,
+            git::add_worktree,
+            git::remove_worktree,
+            git::bisect_status,
+            git::bisect_start,
+            git::bisect_mark,
+            git::bisect_reset,
             git::rename_remote,
             git::remove_remote,
             git::set_remote_url,
@@ -218,6 +239,8 @@ pub fn run() {
             accounts::github_device_poll,
             accounts::gitlab_oauth_login,
             accounts::list_pull_requests,
+            accounts::pr_target,
+            accounts::create_pull_request,
             accounts::list_account_repos,
             accounts::create_remote_repo,
             watcher::watch_repo,
