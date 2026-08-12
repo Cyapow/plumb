@@ -35,6 +35,12 @@
   --traffic-inset: 78px;
 }
 
+/* Windows/Linux have a native title bar and no traffic lights, so drop the gutter. */
+:root[data-os="windows"],
+:root[data-os="linux"] {
+  --traffic-inset: 8px;
+}
+
 :root[data-theme="light"] {
   color-scheme: light;
 
