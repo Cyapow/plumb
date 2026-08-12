@@ -213,7 +213,9 @@ pub fn open_repo(path: String) -> Result<RepoInfo> {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "repository".into());
 
-    let empty = repo.is_empty().unwrap_or(false);
+    // is_empty() only reports true for the default branch name; an unborn HEAD
+    // (no commits yet) is empty regardless of the branch it's named.
+    let empty = repo.head().is_err() || repo.is_empty().unwrap_or(false);
     let (head_branch, detached) = match repo.head() {
         Ok(head) => {
             let detached = repo.head_detached().unwrap_or(false);
@@ -2399,4 +2401,100 @@ fn build_ref_map(repo: &Repository) -> HashMap<Oid, Vec<String>> {
 
 fn short(oid: &Oid) -> String {
     oid.to_string().chars().take(7).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn tmp() -> TempDir {
+        TempDir::new().unwrap()
+    }
+    fn p(d: &TempDir) -> String {
+        d.path().to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn init_names_branch_and_reports_unborn() {
+        let d = tmp();
+        init_repo(p(&d), Some("trunk".into())).unwrap();
+        assert!(is_repo(p(&d)));
+        let info = open_repo(p(&d)).unwrap();
+        assert_eq!(info.head_branch.as_deref(), Some("trunk"));
+        assert!(info.empty);
+        let branches = list_branches(p(&d)).unwrap();
+        assert!(branches.iter().any(|b| b.name == "trunk" && b.is_head && !b.is_remote));
+    }
+
+    #[test]
+    fn init_defaults_to_main() {
+        let d = tmp();
+        init_repo(p(&d), None).unwrap();
+        assert_eq!(open_repo(p(&d)).unwrap().head_branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn is_repo_false_for_plain_dir() {
+        let d = tmp();
+        // A bare temp dir with no git anywhere below it is not a repo.
+        assert!(!is_repo(p(&d)));
+    }
+
+    #[test]
+    fn remotes_roundtrip() {
+        let d = tmp();
+        init_repo(p(&d), None).unwrap();
+        add_remote(p(&d), "origin".into(), "git@example.com:me/repo.git".into()).unwrap();
+        let rs = list_remotes(p(&d)).unwrap();
+        assert_eq!(rs.len(), 1);
+        assert_eq!(rs[0].name, "origin");
+        assert_eq!(rs[0].url, "git@example.com:me/repo.git");
+    }
+
+    #[test]
+    fn identity_roundtrip() {
+        let d = tmp();
+        init_repo(p(&d), None).unwrap();
+        set_git_identity(p(&d), "Ada".into(), "ada@example.com".into(), false).unwrap();
+        let id = git_identity(p(&d)).unwrap();
+        assert_eq!(id.name.as_deref(), Some("Ada"));
+        assert_eq!(id.email.as_deref(), Some("ada@example.com"));
+    }
+
+    #[test]
+    fn gitignore_appends_and_dedupes() {
+        let d = tmp();
+        init_repo(p(&d), None).unwrap();
+        add_to_gitignore(p(&d), "target/".into()).unwrap();
+        add_to_gitignore(p(&d), "target/".into()).unwrap(); // duplicate ignored
+        add_to_gitignore(p(&d), "*.log".into()).unwrap();
+        let gi = std::fs::read_to_string(d.path().join(".gitignore")).unwrap();
+        assert_eq!(gi.matches("target/").count(), 1);
+        assert!(gi.contains("*.log"));
+    }
+
+    #[test]
+    fn commit_shows_in_log_and_reflog() {
+        let d = tmp();
+        init_repo(p(&d), Some("main".into())).unwrap();
+        let repo = git2::Repository::open(d.path()).unwrap();
+        {
+            let mut cfg = repo.config().unwrap();
+            cfg.set_str("user.name", "T").unwrap();
+            cfg.set_str("user.email", "t@t.co").unwrap();
+        }
+        std::fs::write(d.path().join("a.txt"), "hi").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("a.txt")).unwrap();
+        idx.write().unwrap();
+        let tree = repo.find_tree(idx.write_tree().unwrap()).unwrap();
+        let sig = repo.signature().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "first", &tree, &[]).unwrap();
+
+        let commits = list_commits(p(&d), Some(10)).unwrap();
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].summary, "first");
+        assert!(!reflog(p(&d)).unwrap().is_empty());
+    }
 }
