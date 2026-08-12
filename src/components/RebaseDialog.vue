@@ -13,12 +13,14 @@ interface Row {
   sha: string;
   summary: string;
   action: RebaseAction;
+  message: string;
 }
 const rows = ref<Row[]>([]);
 const busy = ref(false);
 
 const ACTIONS: { value: RebaseAction; hint: string }[] = [
   { value: "pick", hint: "keep the commit as-is" },
+  { value: "reword", hint: "keep changes, edit the message below" },
   { value: "squash", hint: "merge into the commit above, combine messages" },
   { value: "fixup", hint: "merge into the commit above, drop this message" },
   { value: "drop", hint: "discard this commit entirely" },
@@ -31,6 +33,7 @@ watch(open, (o) => {
     sha: c.id,
     summary: c.summary,
     action: "pick" as RebaseAction,
+    message: c.summary,
   }));
 });
 
@@ -44,7 +47,11 @@ function move(i: number, dir: -1 | 1) {
 async function start() {
   busy.value = true;
   try {
-    const steps = rows.value.map((r) => ({ action: r.action, sha: r.sha }));
+    const steps = rows.value.map((r) => ({
+      action: r.action,
+      sha: r.sha,
+      message: r.action === "reword" ? r.message : undefined,
+    }));
     const msg = await rebaseInteractive(props.repoPath, props.base, steps);
     toast("Interactive rebase", msg);
     open.value = false;
@@ -69,16 +76,19 @@ async function start() {
         <p class="intro">Reorder with the arrows and choose an action per commit. Applied oldest first.</p>
 
         <div class="rows">
-          <div v-for="(r, i) in rows" :key="r.sha" class="row" :class="{ drop: r.action === 'drop' }">
-            <div class="mv">
-              <button :disabled="i === 0" @click="move(i, -1)" title="Move up">▲</button>
-              <button :disabled="i === rows.length - 1" @click="move(i, 1)" title="Move down">▼</button>
+          <div v-for="(r, i) in rows" :key="r.sha" class="rowwrap">
+            <div class="row" :class="{ drop: r.action === 'drop' }">
+              <div class="mv">
+                <button :disabled="i === 0" @click="move(i, -1)" title="Move up">▲</button>
+                <button :disabled="i === rows.length - 1" @click="move(i, 1)" title="Move down">▼</button>
+              </div>
+              <span class="sha mono">{{ r.sha.slice(0, 7) }}</span>
+              <span class="summary">{{ r.summary }}</span>
+              <select v-model="r.action" :title="ACTIONS.find((a) => a.value === r.action)?.hint">
+                <option v-for="a in ACTIONS" :key="a.value" :value="a.value">{{ a.value }}</option>
+              </select>
             </div>
-            <span class="sha mono">{{ r.sha.slice(0, 7) }}</span>
-            <span class="summary">{{ r.summary }}</span>
-            <select v-model="r.action" :title="ACTIONS.find((a) => a.value === r.action)?.hint">
-              <option v-for="a in ACTIONS" :key="a.value" :value="a.value">{{ a.value }}</option>
-            </select>
+            <input v-if="r.action === 'reword'" v-model="r.message" class="reword" spellcheck="false" placeholder="New commit message" />
           </div>
         </div>
 
@@ -106,6 +116,8 @@ async function start() {
 .rows { flex: 1; overflow-y: auto; padding: var(--space-3) var(--space-4); }
 .row { display: flex; align-items: center; gap: var(--space-3); padding: 6px 8px; border: 1px solid var(--line); margin-bottom: 4px; background: var(--bg); }
 .row.drop { opacity: 0.5; text-decoration: line-through; }
+.reword { width: 100%; height: 28px; margin: 2px 0 6px; padding: 0 10px; background: var(--bg); border: 1px solid var(--accent); color: var(--text); font-size: 12.5px; }
+.reword:focus { outline: none; }
 .mv { display: flex; flex-direction: column; gap: 1px; }
 .mv button { width: 20px; height: 15px; line-height: 1; font-size: 8px; background: var(--raised); border: 1px solid var(--line); cursor: pointer; padding: 0; }
 .mv button:disabled { opacity: 0.35; }

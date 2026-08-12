@@ -757,6 +757,7 @@ fn gitlab_ci_map(base: &str, token: &str, project_enc: &str) -> Vec<CiStatus> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineJob {
+    pub id: String,
     pub name: String,
     pub stage: String,
     pub status: String, // success | failed | running | pending | canceled | skipped | manual | other
@@ -796,6 +797,55 @@ pub async fn pipeline_detail(app: AppHandle, repo_path: String, sha: String) -> 
         }
     }
     Ok(Vec::new())
+}
+
+/// Fetch a job's log (tail-truncated), for inline viewing.
+#[tauri::command]
+pub async fn job_log(app: AppHandle, repo_path: String, job_id: String) -> Result<String> {
+    let cfg = load(&app)?;
+    let mut remotes = repo_remotes(&repo_path);
+    remotes.sort_by_key(|(n, _)| if n == "origin" { 0 } else { 1 });
+    for (_, url) in &remotes {
+        if let Some((host, path)) = parse_remote(url) {
+            if let Some(conn) = cfg.connections.iter().find(|c| conn_web_host(c) == host) {
+                let token = read_token(&conn.id)?;
+                let (provider, base) = (conn.provider.clone(), conn.base_url.clone());
+                return tauri::async_runtime::spawn_blocking(move || {
+                    let (url, gh) = match provider.as_str() {
+                        "github" => (
+                            format!("{}/repos/{}/actions/jobs/{}/logs", base.trim_end_matches('/'), path, job_id),
+                            true,
+                        ),
+                        "gitlab" => (
+                            format!("{}/api/v4/projects/{}/jobs/{}/trace", base.trim_end_matches('/'), urlencode(&path), job_id),
+                            false,
+                        ),
+                        _ => return Err(AccountError::Msg("Unsupported provider.".into())),
+                    };
+                    let mut req = ureq::get(&url).set("authorization", &format!("Bearer {token}")).timeout(Duration::from_secs(25));
+                    if gh {
+                        req = req.set("user-agent", "Plumb").set("accept", "application/vnd.github+json");
+                    }
+                    let text = req
+                        .call()
+                        .map_err(|e| http_err("Couldn't fetch the log", e))?
+                        .into_string()
+                        .map_err(|e| AccountError::Msg(e.to_string()))?;
+                    // Keep the tail so huge logs stay light.
+                    const MAX: usize = 200_000;
+                    if text.len() > MAX {
+                        let tail = &text[text.len() - MAX..];
+                        Ok(format!("… (log truncated; showing last {MAX} chars) …\n{tail}"))
+                    } else {
+                        Ok(text)
+                    }
+                })
+                .await
+                .map_err(|e| AccountError::Msg(e.to_string()))?;
+            }
+        }
+    }
+    Err(AccountError::Msg("No connected account matches this repository's remote.".into()))
 }
 
 /// Retry or cancel a pipeline/run by id. `action` = "retry" | "cancel".
@@ -896,6 +946,7 @@ fn github_pipeline_detail(base: &str, token: &str, owner_repo: &str, sha: &str) 
             .unwrap_or_default()
             .iter()
             .map(|j| PipelineJob {
+                id: j["id"].as_u64().map(|n| n.to_string()).unwrap_or_default(),
                 name: j["name"].as_str().unwrap_or("").to_string(),
                 stage: String::new(),
                 status: gh_job_status(j["status"].as_str().unwrap_or(""), j["conclusion"].as_str().unwrap_or("")),
@@ -934,6 +985,7 @@ fn gitlab_pipeline_detail(base: &str, token: &str, project_enc: &str, sha: &str)
         .unwrap_or_default()
         .iter()
         .map(|j| PipelineJob {
+            id: j["id"].as_u64().map(|n| n.to_string()).unwrap_or_default(),
             name: j["name"].as_str().unwrap_or("").to_string(),
             stage: j["stage"].as_str().unwrap_or("").to_string(),
             status: match j["status"].as_str().unwrap_or("") {

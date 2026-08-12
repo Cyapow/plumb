@@ -211,6 +211,7 @@ export type RebaseAction = "pick" | "reword" | "squash" | "fixup" | "drop";
 export interface RebaseStep {
   action: RebaseAction;
   sha: string;
+  message?: string;
 }
 export function rebaseInteractive(
   path: string,

@@ -1,7 +1,7 @@
 // Small shared UI state: context menus, toasts, and the full-screen diff.
 // These are simple reactive singletons any component can drive.
 
-import { reactive, shallowReactive } from "vue";
+import { reactive, ref, shallowReactive } from "vue";
 import type { FileDiff, ChangedFile } from "./git";
 import { listAiProviders, type AiConfig } from "./ai";
 import { listConnections, type ConnectionConfig } from "./accounts";
@@ -222,10 +222,15 @@ export function setDiffSplit(v: boolean) {
 export function toggleDiffSplit() {
   setDiffSplit(!prefs.split);
 }
+// Bumped to force open diffs to re-fetch (e.g. after toggling ignore-whitespace).
+export const diffReloadKey = ref(0);
 export function setIgnoreWs(v: boolean) {
   prefs.ignoreWs = v;
   localStorage.setItem("plumb.ignoreWs", String(v));
-  import("./git").then((g) => g.setDiffIgnoreWs(v)).catch(() => {});
+  import("./git")
+    .then((g) => g.setDiffIgnoreWs(v))
+    .then(() => diffReloadKey.value++)
+    .catch(() => {});
 }
 export function initPrefs() {
   import("./git").then((g) => g.setDiffIgnoreWs(prefs.ignoreWs)).catch(() => {});
