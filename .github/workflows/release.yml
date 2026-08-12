@@ -1,12 +1,13 @@
 name: Release
 
-# Build the macOS app on every push to main and publish it to the Releases page.
-# The release is keyed to the app version in src-tauri/tauri.conf.json:
-#   - pushing without changing the version updates that release's assets
-#   - bumping the version cuts a brand-new release
+# Build and publish a macOS release when a version tag is pushed. Cut one with
+# `npm run release -- <patch|minor|major>`, which bumps the manifests and pushes
+# the plumb-vX.Y.Z tag that triggers this workflow. (workflow_dispatch lets you
+# re-run a build for the current version manually.)
 on:
   push:
-    branches: [main]
+    tags:
+      - "plumb-v*"
   workflow_dispatch:
 
 # Needed so the workflow can create releases and upload build assets.
@@ -51,10 +52,19 @@ jobs:
           tagName: plumb-v__VERSION__
           releaseName: Plumb v__VERSION__
           releaseBody: |
-            Automated macOS build from `${{ github.sha }}`.
+            Automated **universal** macOS build (Apple Silicon + Intel) from `${{ github.sha }}`.
 
-            This build is **unsigned** — on first launch, right-click the app and
-            choose **Open** (or allow it in System Settings → Privacy & Security).
+            This build is **not notarized by Apple**, so macOS Gatekeeper blocks it on first launch.
+            To open it:
+
+            1. Move **Plumb.app** to `/Applications`.
+            2. Try to open it once (you'll see "Plumb Not Opened").
+            3. Go to **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**.
+
+            Or, from Terminal, clear the quarantine flag:
+            ```
+            xattr -dr com.apple.quarantine /Applications/Plumb.app
+            ```
           releaseDraft: false
           prerelease: false
           # Universal (Apple Silicon + Intel). The inline --config forces ad-hoc
