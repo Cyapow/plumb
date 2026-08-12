@@ -2,7 +2,7 @@
 // Pipeline(s) for a commit: stages/jobs with status, retry / cancel, open logs.
 import { ref, watch } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { pipelineDetail, pipelineAction, type PipelineDetail } from "../lib/accounts";
+import { pipelineDetail, pipelineAction, jobLog, type PipelineDetail, type PipelineJob } from "../lib/accounts";
 import { toast } from "../lib/ui";
 
 const open = defineModel<boolean>({ required: true });
@@ -11,6 +11,24 @@ const props = defineProps<{ repoPath: string; sha: string | null; title: string 
 const pipelines = ref<PipelineDetail[]>([]);
 const loading = ref(false);
 const busyId = ref("");
+const logJob = ref<{ name: string; text: string } | null>(null);
+const logLoading = ref(false);
+
+async function viewLog(j: PipelineJob) {
+  if (!j.id) {
+    openUrl(j.webUrl).catch(() => {});
+    return;
+  }
+  logJob.value = { name: j.name, text: "" };
+  logLoading.value = true;
+  try {
+    logJob.value = { name: j.name, text: await jobLog(props.repoPath, j.id) };
+  } catch (e) {
+    logJob.value = { name: j.name, text: String(e) };
+  } finally {
+    logLoading.value = false;
+  }
+}
 
 async function reload() {
   if (!props.sha) return;
@@ -61,7 +79,17 @@ async function act(p: PipelineDetail, action: "retry" | "cancel") {
           <button class="btn" :disabled="loading" @click="reload">{{ loading ? "…" : "Refresh" }}</button>
           <button class="x" @click="open = false">✕</button>
         </div>
-        <div class="body">
+        <!-- Inline job log -->
+        <div v-if="logJob" class="log-panel">
+          <div class="log-head">
+            <button class="mini" @click="logJob = null">‹ Back</button>
+            <span class="log-name mono">{{ logJob.name }}</span>
+          </div>
+          <pre v-if="!logLoading" class="log mono">{{ logJob.text || "(empty log)" }}</pre>
+          <div v-else class="msg">Loading log…</div>
+        </div>
+
+        <div v-else class="body">
           <div v-if="loading" class="msg">Loading…</div>
           <div v-else-if="!pipelines.length" class="msg">No pipeline found for this commit.</div>
 
@@ -76,12 +104,13 @@ async function act(p: PipelineDetail, action: "retry" | "cancel") {
               <button class="mini" @click="openUrl(p.webUrl)">Logs ↗</button>
             </div>
             <div class="jobs">
-              <div v-for="(j, i) in p.jobs" :key="i" class="job" @click="openUrl(j.webUrl)">
+              <div v-for="(j, i) in p.jobs" :key="i" class="job" @click="viewLog(j)">
                 <span class="dot sm" :class="cls(j.status)"></span>
                 <span v-if="j.stage" class="stage mono">{{ j.stage }}</span>
                 <span class="j-name">{{ j.name }}</span>
                 <span class="grow"></span>
                 <span class="j-status mono" :class="cls(j.status)">{{ j.status }}</span>
+                <button class="jlog" title="Open in browser" @click.stop="openUrl(j.webUrl)">↗</button>
               </div>
               <div v-if="!p.jobs.length" class="no-jobs">No jobs reported.</div>
             </div>
@@ -117,6 +146,11 @@ async function act(p: PipelineDetail, action: "retry" | "cancel") {
 .j-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .j-status { font-size: 10.5px; }
 .no-jobs { padding: 8px 12px; font-size: 11.5px; color: var(--text-faint); }
+.jlog { flex: none; width: 22px; height: 20px; background: var(--raised); border: 1px solid var(--line); color: var(--text-mid); font-size: 11px; cursor: pointer; }
+.log-panel { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.log-head { display: flex; align-items: center; gap: var(--space-3); padding: 8px var(--space-4); border-bottom: 1px solid var(--line); }
+.log-name { font-size: 12.5px; font-weight: 700; }
+.log { flex: 1; margin: 0; padding: var(--space-3) var(--space-4); overflow: auto; font-size: 11.5px; line-height: 1.5; color: var(--text); white-space: pre-wrap; word-break: break-word; background: var(--bg); }
 .dot { width: 9px; height: 9px; flex: none; border-radius: 50%; background: var(--text-faint); }
 .dot.sm { width: 7px; height: 7px; }
 .dot.ok, .ok { color: var(--lane-3); } .dot.ok { background: var(--lane-3); }

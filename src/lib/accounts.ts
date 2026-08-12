@@ -107,6 +107,7 @@ export function triggerPipeline(repoPath: string, gitRef: string, workflowId?: s
 }
 
 export interface PipelineJob {
+  id: string;
   name: string;
   stage: string;
   status: string;
@@ -124,6 +125,9 @@ export function pipelineDetail(repoPath: string, sha: string): Promise<PipelineD
 }
 export function pipelineAction(repoPath: string, id: string, action: "retry" | "cancel"): Promise<string> {
   return invoke("pipeline_action", { repoPath, id, action });
+}
+export function jobLog(repoPath: string, jobId: string): Promise<string> {
+  return invoke("job_log", { repoPath, jobId });
 }
 
 export interface PrTarget {

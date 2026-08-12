@@ -3,6 +3,7 @@
 // Optionally shows a per-hunk action button (stage/unstage) and forwards clicks.
 import { ref, watch } from "vue";
 import { fileDiff, type FileDiff } from "../lib/git";
+import { diffReloadKey } from "../lib/ui";
 import DiffBody from "./DiffBody.vue";
 
 const props = defineProps<{
@@ -23,7 +24,7 @@ const diff = ref<FileDiff | null>(null);
 const loading = ref(false);
 
 watch(
-  () => [props.file, props.staged, props.repoPath, props.refresh] as const,
+  () => [props.file, props.staged, props.repoPath, props.refresh, diffReloadKey.value] as const,
   async () => {
     if (!props.file) {
       diff.value = null;

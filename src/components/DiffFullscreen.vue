@@ -4,7 +4,7 @@
 // without leaving the view. Modelled on GitKraken's expanded diff. The app
 // toolbar stays put above this — Esc or the ✕ closes it.
 import { ref, watch, onMounted, onUnmounted } from "vue";
-import { fullscreen, closeFullscreen, prefs, toggleDiffSplit } from "../lib/ui";
+import { fullscreen, closeFullscreen, prefs, toggleDiffSplit, setIgnoreWs, diffReloadKey } from "../lib/ui";
 import type { FileDiff } from "../lib/git";
 import DiffBody from "./DiffBody.vue";
 import ResizeHandle from "./ResizeHandle.vue";
@@ -28,7 +28,7 @@ async function loadActive() {
   }
 }
 
-watch(() => [fullscreen.open, fullscreen.activeFile], loadActive, { immediate: true });
+watch(() => [fullscreen.open, fullscreen.activeFile, diffReloadKey.value], loadActive, { immediate: true });
 
 function onKey(e: KeyboardEvent) {
   if (!fullscreen.open) return;
@@ -56,6 +56,7 @@ const codeClass = (c: string) =>
       <span class="path mono">{{ fullscreen.activeFile ?? "" }}</span>
       <span class="ctx">{{ fullscreen.subtitle }}</span>
       <span class="grow"></span>
+      <button class="opt" :class="{ on: prefs.ignoreWs }" title="Ignore whitespace" @click="setIgnoreWs(!prefs.ignoreWs)">ws</button>
       <button class="opt" :class="{ on: prefs.split }" title="Toggle side-by-side" @click="toggleDiffSplit">
         {{ prefs.split ? "Split" : "Unified" }}
       </button>

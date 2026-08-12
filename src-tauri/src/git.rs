@@ -2062,11 +2062,14 @@ pub async fn pull_mode(path: String, mode: String) -> Result<String> {
     .await
 }
 
-/// One line of a rebase plan: an action and the commit it applies to.
+/// One line of a rebase plan: an action, the commit, and (for reword) the new
+/// message.
 #[derive(Deserialize)]
 pub struct RebaseStep {
     pub action: String, // pick | reword | squash | fixup | drop
     pub sha: String,
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 /// Run an interactive rebase from `base` (a revspec; None → --root) applying
@@ -2092,13 +2095,39 @@ pub async fn rebase_interactive(
             body.push_str(&format!("{action} {}\n", s.sha));
         }
 
-        let todo = std::env::temp_dir().join(format!("plumb-rebase-{}.txt", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("plumb-rebase-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let todo = dir.join("todo.txt");
         std::fs::write(&todo, &body)
             .map_err(|e| GitError::Message(format!("Couldn't write rebase plan: {e}")))?;
 
         // GIT_SEQUENCE_EDITOR is invoked as `sh -c "<value> <todofile>"`, so
         // `cp <ourtodo>` overwrites git's generated todo with our plan.
         let seq_editor = format!("cp {}", todo.display());
+
+        // Reword messages, in the order git will ask for them (todo order). A
+        // small counter script feeds the next message each time git opens the
+        // editor; with no rewords, GIT_EDITOR is a no-op.
+        let mut idx = 0usize;
+        for s in &steps {
+            if s.action == "reword" {
+                if let Some(msg) = &s.message {
+                    std::fs::write(dir.join(format!("msg_{idx}")), msg.trim_end())
+                        .map_err(|e| GitError::Message(format!("Couldn't stage message: {e}")))?;
+                    idx += 1;
+                }
+            }
+        }
+        let has_reword = idx > 0;
+        let editor_script = dir.join("editor.sh");
+        if has_reword {
+            std::fs::write(
+                &editor_script,
+                "n=$(cat \"$PLUMB_MSG_DIR/counter\" 2>/dev/null || echo 0)\ncp \"$PLUMB_MSG_DIR/msg_$n\" \"$1\"\necho $((n+1)) > \"$PLUMB_MSG_DIR/counter\"\n",
+            )
+            .map_err(|e| GitError::Message(format!("Couldn't stage editor: {e}")))?;
+        }
+        let msg_editor = format!("sh {}", editor_script.display());
 
         let base_arg = base.clone();
         let mut args: Vec<&str> = vec!["rebase", "-i"];
@@ -2107,16 +2136,20 @@ pub async fn rebase_interactive(
             _ => args.push("--root"),
         }
 
-        let output = std::process::Command::new("git")
-            .current_dir(&path)
+        let mut cmd = std::process::Command::new("git");
+        cmd.current_dir(&path)
             .args(&args)
             .env("GIT_SEQUENCE_EDITOR", &seq_editor)
-            .env("GIT_EDITOR", "true")
-            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_EDITOR", if has_reword { msg_editor.as_str() } else { "true" })
+            .env("GIT_TERMINAL_PROMPT", "0");
+        if has_reword {
+            cmd.env("PLUMB_MSG_DIR", &dir);
+        }
+        let output = cmd
             .output()
             .map_err(|e| GitError::Message(format!("Couldn't run git: {e}")))?;
 
-        let _ = std::fs::remove_file(&todo);
+        let _ = std::fs::remove_dir_all(&dir);
 
         if output.status.success() {
             return Ok("Rebased".into());

@@ -251,6 +251,7 @@ pub fn run() {
             accounts::trigger_pipeline,
             accounts::pipeline_detail,
             accounts::pipeline_action,
+            accounts::job_log,
             accounts::pr_target,
             accounts::create_pull_request,
             accounts::list_account_repos,
