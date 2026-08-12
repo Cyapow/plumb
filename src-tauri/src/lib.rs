@@ -1,0 +1,224 @@
+mod accounts;
+mod ai;
+mod git;
+mod watcher;
+
+use tauri::menu::{AboutMetadata, MenuBuilder, MenuItem, SubmenuBuilder};
+use tauri::{AppHandle, Runtime};
+
+/// Build the native application menu. Custom items carry ids that the frontend
+/// receives via the "menu-action" event; predefined items (copy, quit, …) are
+/// handled by the OS. Accelerators live here so they show next to each item and
+/// work app-wide — the frontend no longer binds these keys itself.
+fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    let mi = |id: &str, text: &str, accel: Option<&str>| MenuItem::with_id(app, id, text, true, accel);
+
+    let app_menu = SubmenuBuilder::new(app, "Plumb")
+        .about(Some(AboutMetadata {
+            name: Some("Plumb".into()),
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            comments: Some("A straight line through your history.".into()),
+            ..Default::default()
+        }))
+        .separator()
+        .item(&mi("settings", "Settings…", Some("CmdOrCtrl+,"))?)
+        .separator()
+        .services()
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .separator()
+        .quit()
+        .build()?;
+
+    let file_menu = SubmenuBuilder::new(app, "File")
+        .item(&mi("new_tab", "New Tab", Some("CmdOrCtrl+T"))?)
+        .item(&mi("close_tab", "Close Tab", Some("CmdOrCtrl+W"))?)
+        .separator()
+        .item(&mi("open_repo", "Open Repository…", Some("CmdOrCtrl+O"))?)
+        .item(&mi("clone_repo", "Clone Repository…", Some("CmdOrCtrl+Shift+O"))?)
+        .item(&mi("init_repo", "Initialize Repository…", Some("CmdOrCtrl+I"))?)
+        .separator()
+        .item(&mi("reveal", "Reveal in Finder", None)?)
+        .item(&mi("terminal", "Open in Terminal", None)?)
+        .build()?;
+
+    let edit_menu = SubmenuBuilder::new(app, "Edit")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+
+    let view_menu = SubmenuBuilder::new(app, "View")
+        .item(&mi("command_palette", "Command Palette…", Some("CmdOrCtrl+K"))?)
+        .separator()
+        .item(&mi("view_changes", "Changes", Some("CmdOrCtrl+1"))?)
+        .item(&mi("view_history", "History", Some("CmdOrCtrl+2"))?)
+        .item(&mi("view_prs", "Pull Requests", Some("CmdOrCtrl+3"))?)
+        .separator()
+        .item(&mi("toggle_theme", "Toggle Theme", Some("CmdOrCtrl+Shift+L"))?)
+        .build()?;
+
+    let repo_menu = SubmenuBuilder::new(app, "Repository")
+        .item(&mi("fetch", "Fetch", Some("CmdOrCtrl+R"))?)
+        .item(&mi("pull", "Pull", Some("CmdOrCtrl+Shift+P"))?)
+        .item(&mi("push", "Push", Some("CmdOrCtrl+P"))?)
+        .separator()
+        .item(&mi("new_branch", "New Branch…", Some("CmdOrCtrl+B"))?)
+        .item(&mi("stash", "Stash All Changes", Some("CmdOrCtrl+Shift+S"))?)
+        .separator()
+        .item(&mi("remotes", "Manage Remotes…", None)?)
+        .build()?;
+
+    let window_menu = SubmenuBuilder::new(app, "Window")
+        .minimize()
+        .separator()
+        .close_window()
+        .build()?;
+
+    let help_menu = SubmenuBuilder::new(app, "Help")
+        .item(&mi("github", "Plumb on GitHub", None)?)
+        .build()?;
+
+    let menu = MenuBuilder::new(app)
+        .items(&[
+            &app_menu,
+            &file_menu,
+            &edit_menu,
+            &view_menu,
+            &repo_menu,
+            &window_menu,
+            &help_menu,
+        ])
+        .build()?;
+
+    app.set_menu(menu)?;
+    Ok(())
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .manage(watcher::WatchState::default())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_decorum::init())
+        .setup(|app| {
+            // Vertically centre the macOS traffic lights in our 52px header, and
+            // keep them there across show/resize (which macOS otherwise resets).
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::Manager;
+                use tauri_plugin_decorum::WebviewWindowExt;
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.set_traffic_lights_inset(16.0, 13.0);
+                }
+            }
+
+            build_menu(app.handle())?;
+            // Menu clicks become "menu-action" events the frontend dispatches.
+            app.on_menu_event(|app, event| {
+                use tauri::Emitter;
+                let _ = app.emit("menu-action", event.id().0.clone());
+            });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            git::open_repo,
+            git::is_repo,
+            git::init_repo,
+            git::open_in_terminal,
+            git::list_remotes,
+            git::add_remote,
+            git::list_commits,
+            git::list_branches,
+            git::working_status,
+            git::stage_paths,
+            git::unstage_paths,
+            git::stage_hunk,
+            git::unstage_hunk,
+            git::stage_lines,
+            git::unstage_lines,
+            git::clone_repo,
+            git::list_stashes,
+            git::stash_save,
+            git::stash_apply,
+            git::stash_pop,
+            git::stash_drop,
+            git::list_tags,
+            git::list_files,
+            git::file_history,
+            git::blame_file,
+            git::merge_branch,
+            git::rebase_branch,
+            git::cherry_pick,
+            git::revert_commit,
+            git::op_abort,
+            git::op_continue,
+            git::repo_state,
+            git::list_conflicts,
+            git::conflict_sides,
+            git::resolve_conflict,
+            git::resolve_conflict_content,
+            git::file_diff,
+            git::git_identity,
+            git::set_git_identity,
+            git::initial_commit,
+            git::list_remote_branches,
+            git::connect_remote_branch,
+            git::commit,
+            git::unstage_all,
+            git::uncommit,
+            git::commit_details,
+            git::commit_file_diff,
+            git::checkout_branch,
+            git::checkout_remote_branch,
+            git::checkout_commit,
+            git::create_branch,
+            git::reset,
+            git::discard_paths,
+            git::delete_branch,
+            git::fetch,
+            git::pull,
+            git::push,
+            git::push_advanced,
+            git::pull_mode,
+            git::rebase_interactive,
+            git::delete_remote_branch,
+            git::rename_remote,
+            git::remove_remote,
+            git::set_remote_url,
+            git::prune_remote,
+            ai::list_ai_providers,
+            ai::save_ai_provider,
+            ai::remove_ai_provider,
+            ai::set_default_ai_provider,
+            ai::has_api_key,
+            ai::list_ollama_models,
+            ai::list_provider_models,
+            ai::detect_env_keys,
+            ai::save_ai_provider_from_env,
+            ai::openrouter_login,
+            ai::generate_commit_message,
+            ai::ai_group_changes,
+            ai::test_ai_provider,
+            accounts::list_connections,
+            accounts::connect_account,
+            accounts::remove_connection,
+            accounts::test_connection,
+            accounts::github_device_start,
+            accounts::github_device_poll,
+            accounts::gitlab_oauth_login,
+            accounts::list_pull_requests,
+            accounts::list_account_repos,
+            accounts::create_remote_repo,
+            watcher::watch_repo,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
