@@ -98,6 +98,7 @@ const tag = `plumb-v${next}`;
 const run = (cmd) => execSync(cmd, { cwd: root, stdio: "inherit" });
 run(`git add "${p.tauri}" "${p.pkg}" "${p.cargo}" "${p.lock}"`);
 run(`git commit -m "chore(release): v${next}"`);
-run(`git tag ${tag}`);
+// Annotated tag so `--follow-tags` actually pushes it (lightweight tags are skipped).
+run(`git tag -a ${tag} -m "Plumb v${next}"`);
 run(`git push --follow-tags`);
 console.log(`\n✅ Released ${tag}. Watch the build: https://github.com/Cyapow/plumb/actions`);
