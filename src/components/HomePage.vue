@@ -1,20 +1,25 @@
 <script setup lang="ts">
 // First-launch / home screen — design plate 11. Hero on the left, recently
 // opened + the "numbers, not adjectives" stat block on the right.
+import { computed } from "vue";
 import { relativeTime } from "../lib/format";
 import type { RecentRepo } from "../lib/recents";
 import PlumbMark from "./PlumbMark.vue";
 
-defineProps<{ recents: RecentRepo[] }>();
+const props = defineProps<{ recents: RecentRepo[]; favorites: string[] }>();
 defineEmits<{
   (e: "open"): void;
   (e: "clone"): void;
   (e: "connect"): void;
   (e: "select", path: string): void;
   (e: "forget", path: string): void;
+  (e: "favorite", path: string): void;
 }>();
 
 const abbr = (p: string) => p.replace(/^\/Users\/[^/]+/, "~");
+const isFav = (p: string) => props.favorites.includes(p);
+// Favorited repos surface at the top (even if they've fallen out of recents).
+const favRepos = computed(() => props.recents.filter((r) => isFav(r.path)));
 </script>
 
 <template>
@@ -37,9 +42,25 @@ const abbr = (p: string) => p.replace(/^\/Users\/[^/]+/, "~");
     </div>
 
     <aside class="side">
+      <template v-if="favRepos.length">
+        <div class="side-label">Favorites</div>
+        <div class="recents">
+          <div v-for="r in favRepos" :key="r.path" class="recent" @click="$emit('select', r.path)">
+            <button class="star on" title="Unfavorite" @click.stop="$emit('favorite', r.path)">★</button>
+            <div class="r-main">
+              <div class="r-name">{{ r.name }}</div>
+              <div class="r-sub mono">{{ abbr(r.path) }} · {{ r.branch || "—" }}</div>
+            </div>
+          </div>
+        </div>
+      </template>
+
       <div class="side-label">Recently opened</div>
       <div class="recents">
         <div v-for="r in recents" :key="r.path" class="recent" @click="$emit('select', r.path)">
+          <button class="star" :class="{ on: isFav(r.path) }" :title="isFav(r.path) ? 'Unfavorite' : 'Favorite'" @click.stop="$emit('favorite', r.path)">
+            {{ isFav(r.path) ? "★" : "☆" }}
+          </button>
           <div class="r-main">
             <div class="r-name">{{ r.name }}</div>
             <div class="r-sub mono">{{ abbr(r.path) }} · {{ r.branch || "—" }} · {{ relativeTime(Math.floor(r.at / 1000)) }}</div>
@@ -100,4 +121,7 @@ const abbr = (p: string) => p.replace(/^\/Users\/[^/]+/, "~");
 .r-sub { font-size: 10.5px; color: var(--text-faint); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .r-x { flex: none; width: 22px; height: 22px; background: transparent; border: none; color: var(--text-faint); cursor: pointer; opacity: 0; }
 .recents-empty { font-size: 12.5px; color: var(--text-faint); padding: var(--space-3) 0; }
+.star { flex: none; width: 22px; height: 22px; background: transparent; border: none; color: var(--text-faint); font-size: 14px; cursor: pointer; padding: 0; }
+.star.on { color: var(--lane-2); }
+.side-label { margin-top: var(--space-4); }
 </style>

@@ -205,6 +205,32 @@ export function initTheme() {
   initFonts();
 }
 
+/* ── Misc preferences ─────────────────────────────────────────────── */
+export const prefs = reactive<{ reopenSession: boolean; ignoreWs: boolean; split: boolean }>({
+  reopenSession: localStorage.getItem("plumb.reopenSession") !== "false", // default on
+  ignoreWs: localStorage.getItem("plumb.ignoreWs") === "true",
+  split: localStorage.getItem("plumb.diffSplit") === "true",
+});
+export function setReopenSession(v: boolean) {
+  prefs.reopenSession = v;
+  localStorage.setItem("plumb.reopenSession", String(v));
+}
+export function setDiffSplit(v: boolean) {
+  prefs.split = v;
+  localStorage.setItem("plumb.diffSplit", String(v));
+}
+export function toggleDiffSplit() {
+  setDiffSplit(!prefs.split);
+}
+export function setIgnoreWs(v: boolean) {
+  prefs.ignoreWs = v;
+  localStorage.setItem("plumb.ignoreWs", String(v));
+  import("./git").then((g) => g.setDiffIgnoreWs(v)).catch(() => {});
+}
+export function initPrefs() {
+  import("./git").then((g) => g.setDiffIgnoreWs(prefs.ignoreWs)).catch(() => {});
+}
+
 /* ── Code font settings (independent of theme) ────────────────────── */
 export interface CodeFont {
   name: string;

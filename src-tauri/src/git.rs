@@ -7,9 +7,24 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use git2::{BranchType, DiffOptions, ObjectType, Oid, Patch, Repository, Sort, StatusOptions};
 use serde::{Deserialize, Serialize};
+
+/// When set, diffs ignore whitespace-only changes (a view option).
+static IGNORE_WS: AtomicBool = AtomicBool::new(false);
+
+#[tauri::command]
+pub fn set_diff_ignore_ws(ignore: bool) {
+    IGNORE_WS.store(ignore, Ordering::Relaxed);
+}
+
+fn apply_ignore_ws(opts: &mut DiffOptions) {
+    if IGNORE_WS.load(Ordering::Relaxed) {
+        opts.ignore_whitespace(true);
+    }
+}
 
 /// Error type that crosses the Tauri boundary as a plain string message.
 #[derive(Debug, thiserror::Error)]
@@ -440,6 +455,7 @@ pub fn file_diff(path: String, file: String, staged: bool) -> Result<FileDiff> {
     let mut opts = DiffOptions::new();
     opts.pathspec(&file);
     opts.context_lines(3);
+        apply_ignore_ws(&mut opts);
     opts.include_untracked(true);
     opts.recurse_untracked_dirs(true);
 
@@ -509,6 +525,7 @@ fn file_patch_text(repo: &Repository, file: &str, staged: bool) -> Result<String
     let mut opts = DiffOptions::new();
     opts.pathspec(file);
     opts.context_lines(3);
+        apply_ignore_ws(&mut opts);
     opts.include_untracked(true);
     opts.recurse_untracked_dirs(true);
 
@@ -643,6 +660,7 @@ fn build_line_patch(
     let mut opts = DiffOptions::new();
     opts.pathspec(file);
     opts.context_lines(3);
+        apply_ignore_ws(&mut opts);
 
     let diff = if staged {
         let head_tree = match repo.head() {
@@ -1306,6 +1324,7 @@ pub fn compare_file_diff(path: String, base: String, compare: String, file: Stri
     let mut opts = DiffOptions::new();
     opts.pathspec(&file);
     opts.context_lines(3);
+        apply_ignore_ws(&mut opts);
     let diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&comp_tree), Some(&mut opts))?;
     collect_file_diff(&diff, &file, false)
 }
@@ -1377,6 +1396,7 @@ pub fn commit_file_diff(path: String, id: String, file: String) -> Result<FileDi
     let mut opts = DiffOptions::new();
     opts.pathspec(&file);
     opts.context_lines(3);
+        apply_ignore_ws(&mut opts);
     let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
     collect_file_diff(&diff, &file, false)
 }
@@ -1543,6 +1563,99 @@ pub fn open_in_terminal(path: String) -> Result<()> {
                 Err(GitError::Message("Terminal exited with an error.".into()))
             }
         })
+}
+
+/// Open the repo (or a file) in an editor — VS Code if present, else the
+/// default app.
+#[tauri::command]
+pub fn open_in_editor(path: String) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let vscode = std::process::Command::new("open")
+            .args(["-a", "Visual Studio Code", &path])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !vscode {
+            std::process::Command::new("open")
+                .arg(&path)
+                .status()
+                .map_err(|e| GitError::Message(format!("Couldn't open: {e}")))?;
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = path;
+    Ok(())
+}
+
+/// Append a pattern to the repo's .gitignore (deduplicated).
+#[tauri::command]
+pub fn add_to_gitignore(path: String, pattern: String) -> Result<()> {
+    let repo = open(&path)?;
+    let root = repo.workdir().ok_or_else(|| GitError::Message("No working directory.".into()))?;
+    let gi = root.join(".gitignore");
+    let mut content = std::fs::read_to_string(&gi).unwrap_or_default();
+    let pat = pattern.trim();
+    if pat.is_empty() || content.lines().any(|l| l.trim() == pat) {
+        return Ok(());
+    }
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(pat);
+    content.push('\n');
+    std::fs::write(&gi, content).map_err(|e| GitError::Message(format!("Couldn't write .gitignore: {e}")))?;
+    Ok(())
+}
+
+/// Change a commit's message. HEAD is a plain amend; an older commit is reworded
+/// via a non-interactive rebase (aborts cleanly if it would conflict).
+#[tauri::command]
+pub async fn reword_commit(path: String, id: String, message: String) -> Result<String> {
+    spawn(move || {
+        let repo = open(&path)?;
+        let head = repo.head().ok().and_then(|h| h.target());
+        let target = Oid::from_str(&id).ok();
+
+        if head.is_some() && head == target {
+            let commit = repo.find_commit(target.unwrap())?;
+            commit.amend(Some("HEAD"), None, None, None, Some(message.trim_end()), None)?;
+            return Ok("Message updated".into());
+        }
+
+        // Older commit: rebase with a sed that flips its `pick` to `reword`, and
+        // a GIT_EDITOR that drops in our message file.
+        let short = &id[..id.len().min(8)];
+        let tmp = std::env::temp_dir().join(format!("plumb-reword-{}.txt", std::process::id()));
+        std::fs::write(&tmp, message.trim_end())
+            .map_err(|e| GitError::Message(format!("Couldn't stage message: {e}")))?;
+        let seq_editor = format!("sed -i '' -e 's/^pick {short}/reword {short}/'");
+        let msg_editor = format!("cp {}", tmp.display());
+        let base = format!("{id}^");
+
+        let output = std::process::Command::new("git")
+            .current_dir(&path)
+            .args(["rebase", "-i", &base])
+            .env("GIT_SEQUENCE_EDITOR", &seq_editor)
+            .env("GIT_EDITOR", &msg_editor)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .map_err(|e| GitError::Message(format!("Couldn't run git: {e}")))?;
+        let _ = std::fs::remove_file(&tmp);
+
+        if output.status.success() {
+            return Ok("Message updated".into());
+        }
+        // Non-zero: if it paused (conflict), abort so we don't strand the repo.
+        if open(&path)?.state() != git2::RepositoryState::Clean {
+            let _ = std::process::Command::new("git").current_dir(&path).args(["rebase", "--abort"]).output();
+            return Err(GitError::Message(
+                "Rewording that commit would require resolving a rebase conflict — use interactive rebase instead.".into(),
+            ));
+        }
+        Err(GitError::Message(String::from_utf8_lossy(&output.stderr).trim().to_string()))
+    })
+    .await
 }
 
 /// List installed font family names (macOS CoreText), sorted, with Apple's

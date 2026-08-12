@@ -44,6 +44,7 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .separator()
         .item(&mi("reveal", "Reveal in Finder", None)?)
         .item(&mi("terminal", "Open in Terminal", None)?)
+        .item(&mi("editor", "Open in Editor", None)?)
         .build()?;
 
     let edit_menu = SubmenuBuilder::new(app, "Edit")
@@ -117,6 +118,7 @@ pub fn run() {
         .manage(watcher::WatchState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_decorum::init())
         .setup(|app| {
             // Vertically centre the macOS traffic lights in our 52px header, and
@@ -143,6 +145,10 @@ pub fn run() {
             git::is_repo,
             git::init_repo,
             git::open_in_terminal,
+            git::open_in_editor,
+            git::add_to_gitignore,
+            git::reword_commit,
+            git::set_diff_ignore_ws,
             git::list_system_fonts,
             git::list_remotes,
             git::add_remote,
@@ -243,6 +249,8 @@ pub fn run() {
             accounts::list_ci_statuses,
             accounts::list_workflows,
             accounts::trigger_pipeline,
+            accounts::pipeline_detail,
+            accounts::pipeline_action,
             accounts::pr_target,
             accounts::create_pull_request,
             accounts::list_account_repos,

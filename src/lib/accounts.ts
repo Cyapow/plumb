@@ -106,6 +106,26 @@ export function triggerPipeline(repoPath: string, gitRef: string, workflowId?: s
   return invoke("trigger_pipeline", { repoPath, gitRef, workflowId: workflowId ?? null });
 }
 
+export interface PipelineJob {
+  name: string;
+  stage: string;
+  status: string;
+  webUrl: string;
+}
+export interface PipelineDetail {
+  id: string;
+  name: string;
+  status: string;
+  webUrl: string;
+  jobs: PipelineJob[];
+}
+export function pipelineDetail(repoPath: string, sha: string): Promise<PipelineDetail[]> {
+  return invoke("pipeline_detail", { repoPath, sha });
+}
+export function pipelineAction(repoPath: string, id: string, action: "retry" | "cancel"): Promise<string> {
+  return invoke("pipeline_action", { repoPath, id, action });
+}
+
 export interface PrTarget {
   provider: string; // "github" | "gitlab" | ""
   host: string;

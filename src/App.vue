@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, watch } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
@@ -8,6 +8,8 @@ import {
   isRepo,
   initRepo,
   openInTerminal,
+  openInEditor,
+  rewordCommit,
   initialCommit,
   gitIdentity,
   setGitIdentity,
@@ -73,8 +75,10 @@ import {
   openSettings,
   refreshConnections,
   type MenuItem,
+  prefs,
 } from "./lib/ui";
 import { listPullRequests, listCiStatuses } from "./lib/accounts";
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import CommitGraph from "./components/CommitGraph.vue";
 import ChangesView from "./components/ChangesView.vue";
 import PullRequests from "./components/PullRequests.vue";
@@ -100,6 +104,7 @@ import SubmodulesDialog from "./components/SubmodulesDialog.vue";
 import WorktreesDialog from "./components/WorktreesDialog.vue";
 import BisectDialog from "./components/BisectDialog.vue";
 import RunPipelineDialog from "./components/RunPipelineDialog.vue";
+import PipelineDialog from "./components/PipelineDialog.vue";
 import InputDialog from "./components/InputDialog.vue";
 import HomePage from "./components/HomePage.vue";
 import BranchTree from "./components/BranchTree.vue";
@@ -131,6 +136,15 @@ const prSourceBranch = ref<string | null>(null);
 function openCreatePr(source?: string) {
   prSourceBranch.value = source ?? null;
   createPrOpen.value = true;
+}
+
+const pipelineOpen = ref(false);
+const pipelineSha = ref<string | null>(null);
+const pipelineTitle = ref("");
+function openPipeline(sha: string, title: string) {
+  pipelineSha.value = sha;
+  pipelineTitle.value = title;
+  pipelineOpen.value = true;
 }
 
 const runPipelineOpen = ref(false);
@@ -230,6 +244,15 @@ function forgetRecent(path: string) {
   recents.value = recents.value.filter((r) => r.path !== path);
   saveRecents(recents.value);
 }
+
+// Favorite repos on the home screen (persisted).
+const favorites = ref<string[]>(JSON.parse(localStorage.getItem("plumb.favorites") || "[]"));
+function toggleFavorite(path: string) {
+  favorites.value = favorites.value.includes(path)
+    ? favorites.value.filter((p) => p !== path)
+    : [...favorites.value, path];
+  localStorage.setItem("plumb.favorites", JSON.stringify(favorites.value));
+}
 function selectTab(path: string) {
   if (repo.value?.path === path) {
     activePath.value = path;
@@ -279,12 +302,46 @@ const opLabel = computed(
 );
 
 // CI status per commit sha (for graph badges). Loaded on repo open and fetch —
-// not on every refresh — to stay light on API rate limits.
+// not on every refresh — to stay light on API rate limits. A slow background
+// poll notifies when a pending pipeline finishes.
 const ciMap = ref<Map<string, string>>(new Map());
+const prevCi = new Map<string, string>();
+async function refreshCiMap(path: string, notify: boolean) {
+  let list;
+  try {
+    list = await listCiStatuses(path);
+  } catch {
+    return;
+  }
+  const next = new Map(list.map((c) => [c.sha, c.status]));
+  if (notify) {
+    for (const [sha, status] of next) {
+      if (prevCi.get(sha) === "pending" && (status === "success" || status === "failure")) {
+        notifyCi(sha, status);
+      }
+    }
+  }
+  ciMap.value = next;
+  prevCi.clear();
+  next.forEach((v, k) => prevCi.set(k, v));
+}
 function loadCiMap(path: string) {
-  listCiStatuses(path)
-    .then((list) => (ciMap.value = new Map(list.map((c) => [c.sha, c.status]))))
-    .catch(() => (ciMap.value = new Map()));
+  refreshCiMap(path, false);
+}
+async function notifyCi(sha: string, status: string) {
+  const c = commits.value.find((x) => x.id === sha);
+  const short = c?.short_id ?? sha.slice(0, 7);
+  try {
+    let granted = await isPermissionGranted();
+    if (!granted) granted = (await requestPermission()) === "granted";
+    if (!granted) return;
+    sendNotification({
+      title: status === "success" ? "Pipeline passed ✓" : "Pipeline failed ✕",
+      body: `${short}${c?.summary ? " · " + c.summary : ""} — ${repo.value?.name ?? ""}`,
+    });
+  } catch {
+    /* notifications unavailable */
+  }
 }
 function commitCi(id: string): string | undefined {
   return ciMap.value.get(id);
@@ -598,6 +655,7 @@ function handleMenuAction(id: string) {
     case "clone_repo": return void (cloneOpen.value = true);
     case "reveal": return hasRepo ? void revealItemInDir(repo.value!.path) : undefined;
     case "terminal": return hasRepo ? void openInTerminal(repo.value!.path).catch((e) => toast("Terminal", String(e), "error")) : undefined;
+    case "editor": return hasRepo ? void openInEditor(repo.value!.path).catch((e) => toast("Editor", String(e), "error")) : undefined;
     case "command_palette": return void (paletteOpen.value = !paletteOpen.value);
     case "view_changes": return hasRepo ? void (view.value = "changes") : undefined;
     case "view_history": return hasRepo ? void (view.value = "history") : undefined;
@@ -636,6 +694,7 @@ const paletteItems = computed<PaletteItem[]>(() => {
     { id: "a-pull", label: "Pull", hint: "⇧⌘P", group: "Action", action: doPull },
     { id: "a-push", label: "Push", hint: "⌘P", group: "Action", action: doPush },
     { id: "a-open", label: "Open a repository…", group: "Action", action: chooseRepo },
+    { id: "a-editor", label: "Open in editor", group: "Action", action: () => repo.value && openInEditor(repo.value.path).catch(() => {}) },
     { id: "a-remotes", label: "Manage remotes…", group: "Action", action: () => (remotesOpen.value = true) },
     { id: "a-newpr", label: "New pull / merge request…", group: "Action", action: () => openCreatePr() },
     { id: "a-runci", label: "Run pipeline…", group: "Action", action: () => openRunPipeline() },
@@ -689,14 +748,57 @@ function scheduleRefresh() {
   autoTimer = window.setTimeout(() => refresh(), 250);
 }
 let unlistenMenu: UnlistenFn | undefined;
+/* ── Session restore (reopen where you left off) ──────────────────── */
+const SESSION_KEY = "plumb.session";
+function persistSession() {
+  try {
+    localStorage.setItem(
+      SESSION_KEY,
+      JSON.stringify({ tabs: tabs.value, active: activePath.value, view: view.value }),
+    );
+  } catch {
+    /* ignore quota errors */
+  }
+}
+// Save whenever the open tabs, active repo, or active view change.
+watch([tabs, activePath, view], persistSession, { deep: true });
+
+async function restoreSession() {
+  if (!prefs.reopenSession) return;
+  let s: { tabs?: Tab[]; active?: string; view?: string } = {};
+  try {
+    s = JSON.parse(localStorage.getItem(SESSION_KEY) || "{}");
+  } catch {
+    return;
+  }
+  const saved = Array.isArray(s.tabs) ? s.tabs : [];
+  // Keep only tabs whose repo still exists on disk.
+  const valid: Tab[] = [];
+  for (const t of saved) {
+    if (t?.path && (await isRepo(t.path).catch(() => false))) valid.push({ path: t.path, name: t.name });
+  }
+  if (!valid.length) return;
+  tabs.value = valid;
+  const active = valid.find((t) => t.path === s.active)?.path;
+  if (active) await loadRepo(active);
+  if (s.view === "changes" || s.view === "history" || s.view === "prs") view.value = s.view;
+}
+
+let ciPollTimer: number | undefined;
 onMounted(async () => {
   refreshConnections();
   unlisten = await listen("repo-changed", scheduleRefresh);
   unlistenMenu = await listen<string>("menu-action", (e) => handleMenuAction(e.payload));
+  restoreSession();
+  // Poll CI every 90s so finished pipelines can notify.
+  ciPollTimer = window.setInterval(() => {
+    if (repo.value) refreshCiMap(repo.value.path, true);
+  }, 90_000);
 });
 onUnmounted(() => {
   unlisten?.();
   unlistenMenu?.();
+  if (ciPollTimer) clearInterval(ciPollTimer);
 });
 
 /* ── Undo / redo (commit-level) ───────────────────────────────────── */
@@ -756,6 +858,13 @@ function commitMenu(e: MouseEvent, c: CommitRow) {
         const name = await promptText({ title: "New branch", label: `From ${c.short_id}`, placeholder: "feature/…" });
         if (name && name.trim())
           runOp(() => createBranch(path, name.trim(), c.id, true), `Branch "${name.trim()}" created`);
+      },
+    },
+    {
+      label: "Reword message…",
+      action: async () => {
+        const msg = await promptText({ title: "Reword commit", label: c.short_id, value: c.summary, confirmLabel: "Save" });
+        if (msg && msg.trim()) runOp(() => rewordCommit(path, c.id, msg.trim()), "Message updated");
       },
     },
     { separator: true, label: "" },
@@ -1113,11 +1222,13 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
     <HomePage
       v-else-if="!showWorkspace"
       :recents="recents"
+      :favorites="favorites"
       @open="chooseRepo"
       @clone="cloneOpen = true"
       @connect="openSettings('accounts')"
       @select="loadRepo"
       @forget="forgetRecent"
+      @favorite="toggleFavorite"
     />
 
     <!-- ── Workspace ───────────────────────────────────────────────── -->
@@ -1226,7 +1337,12 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
       />
 
       <!-- Pull / merge requests -->
-      <PullRequests v-else-if="view === 'prs'" :repo-path="repo.path" @create="openCreatePr()" />
+      <PullRequests
+        v-else-if="view === 'prs'"
+        :repo-path="repo.path"
+        @create="openCreatePr()"
+        @pipeline="(sha, title) => sha && openPipeline(sha, title)"
+      />
 
       <!-- History -->
       <section v-else class="history">
@@ -1275,7 +1391,8 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
                   v-if="commitCi(c.id)"
                   class="ci-badge"
                   :class="commitCi(c.id)"
-                  :title="`CI: ${commitCi(c.id)}`"
+                  :title="`CI: ${commitCi(c.id)} — click for jobs`"
+                  @click.stop="openPipeline(c.id, c.short_id)"
                   >{{ ciGlyph(commitCi(c.id)!) }}</span
                 >
                 <span
@@ -1351,6 +1468,7 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
       :current-branch="repo.head_branch"
       :preset-base="compareBase"
     />
+    <PipelineDialog v-if="repo" v-model="pipelineOpen" :repo-path="repo.path" :sha="pipelineSha" :title="pipelineTitle" />
     <RunPipelineDialog
       v-if="repo"
       v-model="runPipelineOpen"
@@ -1690,7 +1808,7 @@ kbd {
 .commit-row.selected { background: var(--raised); box-shadow: inset 2px 0 0 var(--accent); }
 
 .cell-commit { display: flex; align-items: center; gap: var(--space-2); min-width: 0; overflow: hidden; }
-.ci-badge { flex: none; width: 15px; height: 15px; display: inline-grid; place-items: center; font-size: 9.5px; font-weight: 800; color: var(--accent-on); }
+.ci-badge { flex: none; width: 15px; height: 15px; display: inline-grid; place-items: center; font-size: 9.5px; font-weight: 800; color: var(--accent-on); cursor: pointer; }
 .ci-badge.success { background: var(--lane-3); }
 .ci-badge.failure { background: var(--accent); }
 .ci-badge.pending { background: var(--lane-2); }

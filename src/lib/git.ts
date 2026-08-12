@@ -54,6 +54,18 @@ export function initRepo(path: string, branch?: string): Promise<void> {
 export function openInTerminal(path: string): Promise<void> {
   return invoke("open_in_terminal", { path });
 }
+export function openInEditor(path: string): Promise<void> {
+  return invoke("open_in_editor", { path });
+}
+export function addToGitignore(path: string, pattern: string): Promise<void> {
+  return invoke("add_to_gitignore", { path, pattern });
+}
+export function rewordCommit(path: string, id: string, message: string): Promise<string> {
+  return invoke("reword_commit", { path, id, message });
+}
+export function setDiffIgnoreWs(ignore: boolean): Promise<void> {
+  return invoke("set_diff_ignore_ws", { ignore });
+}
 export function listSystemFonts(): Promise<string[]> {
   return invoke("list_system_fonts");
 }
