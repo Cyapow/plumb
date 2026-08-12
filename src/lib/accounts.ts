@@ -1,0 +1,105 @@
+// Typed wrappers over the Rust `accounts` commands.
+import { invoke } from "@tauri-apps/api/core";
+
+export interface Connection {
+  id: string;
+  provider: string; // "github" | "gitlab"
+  label: string;
+  baseUrl: string;
+  username: string;
+  avatarUrl: string;
+}
+
+export interface ConnectionConfig {
+  connections: Connection[];
+}
+
+export function listConnections(): Promise<ConnectionConfig> {
+  return invoke("list_connections");
+}
+
+export function connectAccount(
+  provider: string,
+  baseUrl: string,
+  token: string,
+  label?: string,
+): Promise<Connection> {
+  return invoke("connect_account", { provider, baseUrl, token, label: label ?? null });
+}
+
+export function removeConnection(id: string): Promise<ConnectionConfig> {
+  return invoke("remove_connection", { id });
+}
+
+export function testConnection(id: string): Promise<string> {
+  return invoke("test_connection", { id });
+}
+
+export interface DeviceCode {
+  deviceCode: string;
+  userCode: string;
+  verificationUri: string;
+  interval: number;
+}
+
+export function githubDeviceStart(clientId: string): Promise<DeviceCode> {
+  return invoke("github_device_start", { clientId });
+}
+
+export function githubDevicePoll(
+  clientId: string,
+  deviceCode: string,
+  interval: number,
+): Promise<Connection> {
+  return invoke("github_device_poll", { clientId, deviceCode, interval });
+}
+
+export function gitlabOauthLogin(clientId: string): Promise<Connection> {
+  return invoke("gitlab_oauth_login", { clientId });
+}
+
+export interface PullRequest {
+  number: number;
+  title: string;
+  author: string;
+  authorAvatar: string;
+  draft: boolean;
+  sourceBranch: string;
+  targetBranch: string;
+  url: string;
+  updatedAt: string;
+  provider: string;
+  assignees: string[];
+  reviewers: string[];
+}
+
+export interface PrList {
+  status: string; // "ok" | "no_remote" | "no_account"
+  provider: string | null;
+  host: string | null;
+  username: string | null;
+  items: PullRequest[];
+}
+
+export function listPullRequests(repoPath: string): Promise<PrList> {
+  return invoke("list_pull_requests", { repoPath });
+}
+
+export interface RepoRef {
+  name: string;
+  sshUrl: string;
+  httpUrl: string;
+  description: string;
+}
+
+export function listAccountRepos(connectionId: string): Promise<RepoRef[]> {
+  return invoke("list_account_repos", { connectionId });
+}
+
+export function createRemoteRepo(
+  connectionId: string,
+  name: string,
+  isPrivate: boolean,
+): Promise<RepoRef> {
+  return invoke("create_remote_repo", { connectionId, name, private: isPrivate });
+}
