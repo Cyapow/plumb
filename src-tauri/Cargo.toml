@@ -1,7 +1,7 @@
 [package]
 name = "plumb"
 version = "0.6.0"
-description = "Plumb — a free, native macOS Git client"
+description = "Plumb — a free, native Git client for macOS, Windows, and Linux"
 authors = ["Mathew Chapman"]
 edition = "2021"
 
