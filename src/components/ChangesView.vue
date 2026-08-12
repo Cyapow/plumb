@@ -9,6 +9,8 @@ import {
   stageLines,
   unstageLines,
   discardPaths,
+  addToGitignore,
+  openInEditor,
   fileDiff,
   commit,
   gitIdentity,
@@ -71,17 +73,43 @@ const busy = ref(false);
 const error = ref<string | null>(null);
 const filesWidth = ref(360);
 
-// Composer keyboard shortcuts (active while the Changes view is mounted):
-// ⌘⏎ commits, ⌘G drafts an AI message.
+// Keyboard shortcuts while the Changes view is mounted:
+//  ⌘⏎ commit · ⌘G draft AI message · j/k move file selection · space stage/unstage.
 function onComposerKey(e: KeyboardEvent) {
-  if (!e.metaKey) return;
-  if (e.key === "Enter") {
-    e.preventDefault();
-    if (canCommit.value && !busy.value) doCommit();
-  } else if (e.key.toLowerCase() === "g") {
-    e.preventDefault();
-    if (!generating.value) generate();
+  if (e.metaKey) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (canCommit.value && !busy.value) doCommit();
+    } else if (e.key.toLowerCase() === "g") {
+      e.preventDefault();
+      if (!generating.value) generate();
+    }
+    return;
   }
+  // Don't hijack keys while typing in the message box or a field.
+  const el = document.activeElement as HTMLElement | null;
+  if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) return;
+
+  const list = [...leftOut.value, ...inCommit.value];
+  if (!list.length) return;
+  if (e.key === "j" || e.key === "ArrowDown") {
+    e.preventDefault();
+    moveSelection(list, 1);
+  } else if (e.key === "k" || e.key === "ArrowUp") {
+    e.preventDefault();
+    moveSelection(list, -1);
+  } else if (e.key === " ") {
+    const cur = list.find((f) => f.path === selected.value);
+    if (cur) {
+      e.preventDefault();
+      toggle(cur);
+    }
+  }
+}
+function moveSelection(list: StatusEntry[], dir: 1 | -1) {
+  const i = list.findIndex((f) => f.path === selected.value);
+  const next = i < 0 ? list[0] : list[Math.max(0, Math.min(list.length - 1, i + dir))];
+  if (next) selected.value = next.path;
 }
 onMounted(() => window.addEventListener("keydown", onComposerKey));
 onUnmounted(() => window.removeEventListener("keydown", onComposerKey));
@@ -248,6 +276,19 @@ function fileMenu(e: MouseEvent, entry: StatusEntry) {
     },
     { label: "File history", action: () => openFileInspector(props.repoPath, entry.path, "history") },
     { label: "Blame", action: () => openFileInspector(props.repoPath, entry.path, "blame") },
+    { label: "Open in editor", action: () => openInEditor(`${props.repoPath.replace(/\/$/, "")}/${entry.path}`).catch(() => {}) },
+    {
+      label: "Add to .gitignore",
+      action: async () => {
+        try {
+          await addToGitignore(props.repoPath, entry.path);
+          await reload();
+          toast("Added to .gitignore", entry.path);
+        } catch (err) {
+          toast("Couldn't update .gitignore", String(err), "error");
+        }
+      },
+    },
     {
       label: "Copy path",
       action: async () => {

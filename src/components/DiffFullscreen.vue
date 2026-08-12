@@ -4,7 +4,7 @@
 // without leaving the view. Modelled on GitKraken's expanded diff. The app
 // toolbar stays put above this — Esc or the ✕ closes it.
 import { ref, watch, onMounted, onUnmounted } from "vue";
-import { fullscreen, closeFullscreen } from "../lib/ui";
+import { fullscreen, closeFullscreen, prefs, toggleDiffSplit } from "../lib/ui";
 import type { FileDiff } from "../lib/git";
 import DiffBody from "./DiffBody.vue";
 import ResizeHandle from "./ResizeHandle.vue";
@@ -56,6 +56,9 @@ const codeClass = (c: string) =>
       <span class="path mono">{{ fullscreen.activeFile ?? "" }}</span>
       <span class="ctx">{{ fullscreen.subtitle }}</span>
       <span class="grow"></span>
+      <button class="opt" :class="{ on: prefs.split }" title="Toggle side-by-side" @click="toggleDiffSplit">
+        {{ prefs.split ? "Split" : "Unified" }}
+      </button>
       <button class="close" title="Close (Esc)" @click="closeFullscreen">✕ Close</button>
     </div>
     <div class="fs-body">
@@ -103,6 +106,8 @@ const codeClass = (c: string) =>
 .fs-bar .path { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fs-bar .ctx { font-size: 11px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; }
 .fs-bar .grow { flex: 1; }
+.opt { height: 24px; padding: 0 10px; margin-right: var(--space-2); background: var(--raised); border: 1px solid var(--line); cursor: pointer; font-size: 11.5px; white-space: nowrap; color: var(--text-mid); }
+.opt.on { border-color: var(--accent); color: var(--accent); }
 .close { height: 24px; padding: 0 10px; background: var(--raised); border: 1px solid var(--line); cursor: pointer; font-size: 11.5px; white-space: nowrap; }
 
 .fs-body { flex: 1; display: flex; min-height: 0; }

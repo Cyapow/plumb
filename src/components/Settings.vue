@@ -19,6 +19,10 @@ import {
   setCodeFontSize,
   setCodeLineHeight,
   resetCodeFont,
+  prefs,
+  setReopenSession,
+  setIgnoreWs,
+  setDiffSplit,
   type SettingsSection,
 } from "../lib/ui";
 import { BUILTIN_THEMES, type Theme, type TokenKey } from "../lib/themes";
@@ -232,6 +236,22 @@ function hex(v: string | undefined): string {
                 </div>
                 <button class="btn reset-font" @click="resetCodeFont">Reset to default</button>
               </div>
+
+              <div class="theme-group">
+                <div class="group-label">Behavior</div>
+                <label class="pref-row">
+                  <input type="checkbox" :checked="prefs.reopenSession" @change="setReopenSession(($event.target as HTMLInputElement).checked)" />
+                  <span>Reopen last session on launch <em>— restore open tabs and the active repo</em></span>
+                </label>
+                <label class="pref-row">
+                  <input type="checkbox" :checked="prefs.ignoreWs" @change="setIgnoreWs(($event.target as HTMLInputElement).checked)" />
+                  <span>Ignore whitespace in diffs <em>— applies to newly opened diffs</em></span>
+                </label>
+                <label class="pref-row">
+                  <input type="checkbox" :checked="prefs.split" @change="setDiffSplit(($event.target as HTMLInputElement).checked)" />
+                  <span>Side-by-side diffs <em>— show old and new in two columns</em></span>
+                </label>
+              </div>
             </div>
 
             <div v-else class="about">
@@ -326,6 +346,9 @@ function hex(v: string | undefined): string {
 .font-preview .pv-str { color: var(--syn-string, #98c379); }
 .font-preview .pv-com { color: var(--syn-comment, #7f848e); font-style: italic; }
 .reset-font { margin-top: var(--space-3); height: 30px; padding: 0 14px; background: var(--raised); border: 1px solid var(--line); font-size: 12px; color: var(--text-mid); cursor: pointer; }
+.pref-row { display: flex; align-items: flex-start; gap: 8px; font-size: 12.5px; color: var(--text); margin-bottom: var(--space-2); cursor: pointer; }
+.pref-row input { margin-top: 2px; }
+.pref-row em { color: var(--text-faint); font-style: normal; font-size: 11.5px; }
 
 .about { text-align: center; padding-top: var(--space-8); }
 .about-mark { display: flex; justify-content: center; margin-bottom: var(--space-4); color: var(--text); }

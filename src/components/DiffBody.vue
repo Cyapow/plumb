@@ -2,9 +2,10 @@
 // Presentational diff renderer — blue/red, line-numbered. Optional per-hunk
 // action button, and optional line selection for line-level staging.
 import { computed, ref, watch } from "vue";
-import type { DiffHunk } from "../lib/git";
+import type { DiffHunk, DiffLine } from "../lib/git";
 import { highlightLine, langFromPath } from "../lib/highlight";
 import { wordDiff, type Seg } from "../lib/worddiff";
+import { prefs } from "../lib/ui";
 
 const props = defineProps<{
   hunks: DiffHunk[];
@@ -51,6 +52,32 @@ const emit = defineEmits<{
 const cls = (o: string) => (o === "+" ? "add" : o === "-" ? "del" : "ctx");
 const verb = () => (props.actionLabel?.startsWith("Unstage") ? "Unstage" : "Stage");
 
+// Side-by-side: pair deleted (left) with added (right) lines; context spans both.
+interface Cell { l: DiffLine; li: number }
+interface SplitRow { left?: Cell; right?: Cell; ctx?: boolean }
+const split = computed(() => prefs.split);
+const splitRows = computed<SplitRow[][]>(() =>
+  props.hunks.map((h) => {
+    const rows: SplitRow[] = [];
+    const lines = h.lines;
+    let i = 0;
+    while (i < lines.length) {
+      if (lines[i].origin === " ") {
+        rows.push({ left: { l: lines[i], li: i }, right: { l: lines[i], li: i }, ctx: true });
+        i++;
+      } else {
+        const dels: Cell[] = [];
+        const adds: Cell[] = [];
+        while (i < lines.length && lines[i].origin === "-") dels.push({ l: lines[i], li: i++ });
+        while (i < lines.length && lines[i].origin === "+") adds.push({ l: lines[i], li: i++ });
+        const n = Math.max(dels.length, adds.length);
+        for (let k = 0; k < n; k++) rows.push({ left: dels[k], right: adds[k] });
+      }
+    }
+    return rows;
+  }),
+);
+
 // Selected line indices, keyed "hunk:line".
 const picked = ref<Set<string>>(new Set());
 watch(
@@ -80,7 +107,8 @@ function pickedInHunk(hi: number): number[] {
     <div v-if="loading" class="empty">Reading diff…</div>
     <div v-else-if="binary" class="empty">Binary file — no textual diff.</div>
     <div v-else-if="hunks.length === 0" class="empty">{{ emptyText ?? "No changes to show." }}</div>
-    <div v-else class="hunks mono">
+    <!-- Unified -->
+    <div v-else-if="!split" class="hunks mono">
       <template v-for="(h, hi) in hunks" :key="hi">
         <div class="hunk-head">
           <span class="hh-text">{{ h.header }}</span>
@@ -105,6 +133,32 @@ function pickedInHunk(hi: number): number[] {
             ><span v-for="(s, k) in segsFor(hi, li)" :key="k" :class="{ word: s.changed }">{{ s.text }}</span></span
           >
           <span v-else class="content" v-html="hl(l.content)"></span>
+        </div>
+      </template>
+    </div>
+
+    <!-- Side-by-side -->
+    <div v-else class="hunks mono">
+      <template v-for="(h, hi) in hunks" :key="hi">
+        <div class="hunk-head">
+          <span class="hh-text">{{ h.header }}</span>
+          <button v-if="actionLabel" class="hunk-btn" @click="$emit('hunkAction', hi)">{{ actionLabel }}</button>
+        </div>
+        <div v-for="(row, ri) in splitRows[hi]" :key="hi + '-' + ri" class="srow">
+          <div class="side" :class="row.ctx ? 'ctx' : row.left ? 'del' : 'empty'">
+            <span class="ln">{{ row.left?.l.old_lineno ?? "" }}</span>
+            <span v-if="row.left && segsFor(hi, row.left.li)" class="content"
+              ><span v-for="(s, k) in segsFor(hi, row.left.li)" :key="k" :class="{ word: s.changed }">{{ s.text }}</span></span
+            >
+            <span v-else-if="row.left" class="content" v-html="hl(row.left.l.content)"></span>
+          </div>
+          <div class="side" :class="row.ctx ? 'ctx' : row.right ? 'add' : 'empty'">
+            <span class="ln">{{ row.right?.l.new_lineno ?? "" }}</span>
+            <span v-if="row.right && segsFor(hi, row.right.li)" class="content"
+              ><span v-for="(s, k) in segsFor(hi, row.right.li)" :key="k" :class="{ word: s.changed }">{{ s.text }}</span></span
+            >
+            <span v-else-if="row.right" class="content" v-html="hl(row.right.l.content)"></span>
+          </div>
         </div>
       </template>
     </div>
@@ -141,4 +195,17 @@ function pickedInHunk(hi: number): number[] {
 /* Word-level emphasis within a changed line. */
 .line.add .word { background: color-mix(in srgb, var(--diff-add-num) 32%, transparent); }
 .line.del .word { background: color-mix(in srgb, var(--diff-del-fg) 32%, transparent); }
+
+/* ── Side-by-side ── */
+.srow { display: flex; }
+.srow .side { flex: 1 1 50%; min-width: 0; display: flex; overflow-x: auto; border-left: 1px solid var(--line-soft); }
+.srow .side:first-child { border-left: none; }
+.srow .side .ln { width: 44px; flex: none; text-align: right; padding-right: var(--space-3); color: var(--text-faint); user-select: none; position: sticky; left: 0; background: inherit; }
+.srow .side .content { white-space: pre; flex: 1; user-select: text; color: var(--text); padding-right: var(--space-3); }
+.srow .side.add { background: var(--diff-add-bg); }
+.srow .side.add .ln { color: var(--diff-add-num); }
+.srow .side.del { background: var(--diff-del-bg); }
+.srow .side.empty { background: color-mix(in srgb, var(--line-soft) 40%, transparent); }
+.srow .side.add .word { background: color-mix(in srgb, var(--diff-add-num) 32%, transparent); }
+.srow .side.del .word { background: color-mix(in srgb, var(--diff-del-fg) 32%, transparent); }
 </style>

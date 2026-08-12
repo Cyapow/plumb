@@ -756,6 +756,204 @@ fn gitlab_ci_map(base: &str, token: &str, project_enc: &str) -> Vec<CiStatus> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PipelineJob {
+    pub name: String,
+    pub stage: String,
+    pub status: String, // success | failed | running | pending | canceled | skipped | manual | other
+    pub web_url: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineDetail {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    pub web_url: String,
+    pub jobs: Vec<PipelineJob>,
+}
+
+/// Pipeline(s) for a commit, with their jobs — for the detail view. GitHub can
+/// have several workflow runs per commit; GitLab has one latest pipeline.
+#[tauri::command]
+pub async fn pipeline_detail(app: AppHandle, repo_path: String, sha: String) -> Result<Vec<PipelineDetail>> {
+    let cfg = load(&app)?;
+    let mut remotes = repo_remotes(&repo_path);
+    remotes.sort_by_key(|(n, _)| if n == "origin" { 0 } else { 1 });
+    for (_, url) in &remotes {
+        if let Some((host, path)) = parse_remote(url) {
+            if let Some(conn) = cfg.connections.iter().find(|c| conn_web_host(c) == host) {
+                let token = read_token(&conn.id)?;
+                let (provider, base) = (conn.provider.clone(), conn.base_url.clone());
+                return tauri::async_runtime::spawn_blocking(move || match provider.as_str() {
+                    "github" => Ok(github_pipeline_detail(&base, &token, &path, &sha)),
+                    "gitlab" => Ok(gitlab_pipeline_detail(&base, &token, &urlencode(&path), &sha)),
+                    _ => Ok(Vec::new()),
+                })
+                .await
+                .map_err(|e| AccountError::Msg(e.to_string()))?;
+            }
+        }
+    }
+    Ok(Vec::new())
+}
+
+/// Retry or cancel a pipeline/run by id. `action` = "retry" | "cancel".
+#[tauri::command]
+pub async fn pipeline_action(app: AppHandle, repo_path: String, id: String, action: String) -> Result<String> {
+    let cfg = load(&app)?;
+    let mut remotes = repo_remotes(&repo_path);
+    remotes.sort_by_key(|(n, _)| if n == "origin" { 0 } else { 1 });
+    for (_, url) in &remotes {
+        if let Some((host, path)) = parse_remote(url) {
+            if let Some(conn) = cfg.connections.iter().find(|c| conn_web_host(c) == host) {
+                let token = read_token(&conn.id)?;
+                let (provider, base) = (conn.provider.clone(), conn.base_url.clone());
+                return tauri::async_runtime::spawn_blocking(move || {
+                    let (verb, ok) = match action.as_str() {
+                        "retry" => ("retry", "Retrying"),
+                        "cancel" => ("cancel", "Cancelling"),
+                        _ => return Err(AccountError::Msg("action must be retry/cancel".into())),
+                    };
+                    let url = match provider.as_str() {
+                        "github" => format!(
+                            "{}/repos/{}/actions/runs/{}/{}",
+                            base.trim_end_matches('/'),
+                            path,
+                            id,
+                            if verb == "retry" { "rerun" } else { "cancel" }
+                        ),
+                        "gitlab" => format!(
+                            "{}/api/v4/projects/{}/pipelines/{}/{}",
+                            base.trim_end_matches('/'),
+                            urlencode(&path),
+                            id,
+                            verb
+                        ),
+                        _ => return Err(AccountError::Msg("Unsupported provider.".into())),
+                    };
+                    let mut req = ureq::post(&url).set("authorization", &format!("Bearer {token}")).timeout(Duration::from_secs(20));
+                    if provider == "github" {
+                        req = req.set("user-agent", "Plumb").set("accept", "application/vnd.github+json");
+                    }
+                    req.call().map_err(|e| http_err("Pipeline action failed", e))?;
+                    Ok(format!("{ok} pipeline"))
+                })
+                .await
+                .map_err(|e| AccountError::Msg(e.to_string()))?;
+            }
+        }
+    }
+    Err(AccountError::Msg("No connected account matches this repository's remote.".into()))
+}
+
+fn gh_job_status(status: &str, conclusion: &str) -> String {
+    if status != "completed" {
+        return match status {
+            "in_progress" => "running",
+            _ => "pending",
+        }
+        .into();
+    }
+    match conclusion {
+        "success" => "success",
+        "failure" | "timed_out" | "startup_failure" => "failed",
+        "cancelled" => "canceled",
+        "skipped" | "neutral" => "skipped",
+        "action_required" => "pending",
+        _ => "other",
+    }
+    .into()
+}
+
+fn github_pipeline_detail(base: &str, token: &str, owner_repo: &str, sha: &str) -> Vec<PipelineDetail> {
+    let get = |url: &str| -> Option<serde_json::Value> {
+        ureq::get(url)
+            .set("authorization", &format!("Bearer {token}"))
+            .set("user-agent", "Plumb")
+            .set("accept", "application/vnd.github+json")
+            .timeout(Duration::from_secs(20))
+            .call()
+            .ok()
+            .and_then(|r| r.into_json().ok())
+    };
+    let runs_url = format!(
+        "{}/repos/{}/actions/runs?head_sha={}&per_page=20",
+        base.trim_end_matches('/'),
+        owner_repo,
+        sha
+    );
+    let runs = match get(&runs_url) {
+        Some(j) => j["workflow_runs"].as_array().cloned().unwrap_or_default(),
+        None => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for r in runs {
+        let run_id = r["id"].as_u64().unwrap_or(0);
+        let jobs_url = format!("{}/repos/{}/actions/runs/{}/jobs?per_page=100", base.trim_end_matches('/'), owner_repo, run_id);
+        let jobs = get(&jobs_url)
+            .and_then(|j| j["jobs"].as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .map(|j| PipelineJob {
+                name: j["name"].as_str().unwrap_or("").to_string(),
+                stage: String::new(),
+                status: gh_job_status(j["status"].as_str().unwrap_or(""), j["conclusion"].as_str().unwrap_or("")),
+                web_url: j["html_url"].as_str().unwrap_or("").to_string(),
+            })
+            .collect();
+        out.push(PipelineDetail {
+            id: run_id.to_string(),
+            name: r["name"].as_str().unwrap_or("Workflow").to_string(),
+            status: gh_job_status(r["status"].as_str().unwrap_or(""), r["conclusion"].as_str().unwrap_or("")),
+            web_url: r["html_url"].as_str().unwrap_or("").to_string(),
+            jobs,
+        });
+    }
+    out
+}
+
+fn gitlab_pipeline_detail(base: &str, token: &str, project_enc: &str, sha: &str) -> Vec<PipelineDetail> {
+    let get = |url: &str| -> Option<serde_json::Value> {
+        ureq::get(url)
+            .set("authorization", &format!("Bearer {token}"))
+            .timeout(Duration::from_secs(20))
+            .call()
+            .ok()
+            .and_then(|r| r.into_json().ok())
+    };
+    let list_url = format!("{}/api/v4/projects/{}/pipelines?sha={}&per_page=1", base.trim_end_matches('/'), project_enc, sha);
+    let pipeline = match get(&list_url).and_then(|j| j.as_array().and_then(|a| a.first().cloned())) {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+    let pid = pipeline["id"].as_u64().unwrap_or(0);
+    let jobs_url = format!("{}/api/v4/projects/{}/pipelines/{}/jobs?per_page=100", base.trim_end_matches('/'), project_enc, pid);
+    let jobs = get(&jobs_url)
+        .and_then(|j| j.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .map(|j| PipelineJob {
+            name: j["name"].as_str().unwrap_or("").to_string(),
+            stage: j["stage"].as_str().unwrap_or("").to_string(),
+            status: match j["status"].as_str().unwrap_or("") {
+                "created" | "waiting_for_resource" | "preparing" | "scheduled" => "pending".into(),
+                s => s.to_string(),
+            },
+            web_url: j["web_url"].as_str().unwrap_or("").to_string(),
+        })
+        .collect();
+    vec![PipelineDetail {
+        id: pid.to_string(),
+        name: format!("Pipeline #{pid}"),
+        status: pipeline["status"].as_str().unwrap_or("").to_string(),
+        web_url: pipeline["web_url"].as_str().unwrap_or("").to_string(),
+        jobs,
+    }]
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkflowRef {
     pub id: String,
     pub name: String,
