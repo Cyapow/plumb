@@ -39,6 +39,15 @@ function theme(
   return { id, name, group, mode, counterpart, vars };
 }
 
+// The Modernist themes carry no overrides — they ARE the tokens.css defaults,
+// so their values don't live in a Vars map. Expose the key colors here so
+// previews (and partial custom themes, which inherit these) render truthfully
+// instead of borrowing whatever theme is currently applied.
+export const MODERNIST_BASE: Record<"dark" | "light", Partial<Record<TokenKey, string>>> = {
+  dark: { "--bg": "#171616", "--surface": "#201e1d", "--line": "#3a3736", "--text": "#f3f2f2", "--accent": "#ff563c" },
+  light: { "--bg": "#f3f2f2", "--surface": "#eae9e9", "--line": "#d7d3d3", "--text": "#201e1d", "--accent": "#ec3013" },
+};
+
 export const BUILTIN_THEMES: Theme[] = [
   theme("modernist-dark", "Modernist Dark", "Modernist", "dark", "modernist-light", {}),
   theme("modernist-light", "Modernist Light", "Modernist", "light", "modernist-dark", {}),

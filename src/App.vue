@@ -1210,9 +1210,6 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
       </button>
       <button class="add-tab" title="Open a repository" @click="goHome">+</button>
       <div class="spacer" data-tauri-drag-region></div>
-      <button class="icon-btn" @click="toggleTheme" :title="`Theme: ${appState.theme}`">
-        {{ appState.theme === "dark" ? "◐" : "◑" }}
-      </button>
       <button class="icon-btn" @click="openSettings()" title="Settings">⚙</button>
       <button class="pill kbd-pill mono" title="Command palette (⌘K)" @click="paletteOpen = true">⌘K</button>
     </header>
