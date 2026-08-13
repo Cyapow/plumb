@@ -122,14 +122,19 @@ pub async fn connect_account(
     base_url: String,
     token: String,
     label: Option<String>,
+    username: Option<String>,
 ) -> Result<Connection> {
     let base = normalize_base(&provider, &base_url);
-    let (username, avatar_url) = {
-        let (p, b, t) = (provider.clone(), base.clone(), token.clone());
-        tauri::async_runtime::spawn_blocking(move || fetch_user(&p, &b, &t))
+    let user_in = username.unwrap_or_default();
+    let (fetched, avatar_url) = {
+        let (p, b, t, u) = (provider.clone(), base.clone(), token.clone(), user_in.clone());
+        tauri::async_runtime::spawn_blocking(move || fetch_user(&p, &b, &t, &u))
             .await
             .map_err(|e| AccountError::Msg(e.to_string()))??
     };
+    // Basic-auth providers (Beanstalk) need the entered username preserved for
+    // future requests; token providers use whatever the API reported.
+    let username = if fetched.is_empty() { user_in } else { fetched };
 
     let id = new_id(&provider);
     store_token(&id, &token)?;
@@ -159,7 +164,7 @@ pub async fn test_connection(app: AppHandle, id: String) -> Result<String> {
         .ok_or_else(|| AccountError::Msg("Connection not found.".into()))?;
     let token = read_token(&id)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let (user, _) = fetch_user(&conn.provider, &conn.base_url, &token)?;
+        let (user, _) = fetch_user(&conn.provider, &conn.base_url, &token, &conn.username)?;
         Ok(format!("Signed in as {user}."))
     })
     .await
@@ -178,6 +183,16 @@ fn normalize_base(provider: &str, base_url: &str) -> String {
             b.to_string()
         } else {
             format!("https://dev.azure.com/{b}")
+        };
+    }
+    // Beanstalk is account-scoped: accept a full URL or just the account name.
+    if provider == "beanstalk" {
+        return if b.is_empty() {
+            String::new()
+        } else if b.starts_with("http") {
+            b.to_string()
+        } else {
+            format!("https://{b}.beanstalkapp.com")
         };
     }
     if !b.is_empty() {
@@ -239,7 +254,7 @@ fn azure_ids(host: &str, path: &str) -> Option<(String, String, String)> {
     None
 }
 
-fn fetch_user(provider: &str, base: &str, token: &str) -> Result<(String, String)> {
+fn fetch_user(provider: &str, base: &str, token: &str, user: &str) -> Result<(String, String)> {
     match provider {
         "github" => {
             let url = format!("{}/user", base.trim_end_matches('/'));
@@ -296,8 +311,37 @@ fn fetch_user(provider: &str, base: &str, token: &str) -> Result<(String, String
                 .to_string();
             Ok((name, String::new()))
         }
+        "beanstalk" => {
+            // Basic auth (username + password/access token); validate against
+            // the currently-authenticated user.
+            if user.trim().is_empty() {
+                return Err(AccountError::Msg("Enter your Beanstalk username.".into()));
+            }
+            let url = format!("{}/api/users/current.json", base.trim_end_matches('/'));
+            let json: serde_json::Value = ureq::get(&url)
+                .set("authorization", &basic_auth(user, token))
+                .set("accept", "application/json")
+                .timeout(Duration::from_secs(15))
+                .call()
+                .map_err(|e| http_err("Beanstalk sign-in failed", e))?
+                .into_json()?;
+            let u = &json["user"];
+            let login = u["login"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .or_else(|| u["name"].as_str())
+                .unwrap_or(user)
+                .to_string();
+            Ok((login, String::new()))
+        }
         other => Err(AccountError::Msg(format!("Unknown provider '{other}'."))),
     }
+}
+
+/// HTTP Basic header from a username and secret.
+fn basic_auth(user: &str, secret: &str) -> String {
+    let raw = format!("{user}:{secret}");
+    format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(raw))
 }
 
 /// Find the connected account serving this remote (host, path), returning it
@@ -410,7 +454,7 @@ pub async fn github_device_poll(
     let (token, username, avatar) =
         tauri::async_runtime::spawn_blocking(move || -> Result<(String, String, String)> {
             let token = poll_github(&client_id, &device_code, interval)?;
-            let (u, a) = fetch_user("github", "https://api.github.com", &token)?;
+            let (u, a) = fetch_user("github", "https://api.github.com", &token, "")?;
             Ok((token, u, a))
         })
         .await
@@ -454,7 +498,7 @@ pub async fn gitlab_oauth_login(app: AppHandle, client_id: String) -> Result<Con
     let (token, username, avatar) =
         tauri::async_runtime::spawn_blocking(move || -> Result<(String, String, String)> {
             let token = gitlab_pkce(&client_id, base)?;
-            let (u, a) = fetch_user("gitlab", base, &token)?;
+            let (u, a) = fetch_user("gitlab", base, &token, "")?;
             Ok((token, u, a))
         })
         .await
@@ -1569,6 +1613,7 @@ pub async fn list_account_repos(app: AppHandle, connection_id: String) -> Result
         "github" => github_repos(&conn.base_url, &token),
         "gitlab" => gitlab_repos(&conn.base_url, &token),
         "azure" => azure_repos(&conn.base_url, &token),
+        "beanstalk" => beanstalk_repos(&conn.base_url, &conn.username, &token),
         _ => Ok(Vec::new()),
     })
     .await
@@ -1595,6 +1640,7 @@ pub async fn create_remote_repo(
         "github" => github_create(&conn.base_url, &token, &name, private),
         "gitlab" => gitlab_create(&conn.base_url, &token, &name, private),
         "azure" => azure_create(&conn.base_url, &token, &name, private),
+        "beanstalk" => beanstalk_create(&conn.base_url, &conn.username, &token, &name, private),
         _ => Err(AccountError::Msg("Unsupported provider.".into())),
     })
     .await
@@ -2093,6 +2139,72 @@ fn azure_trigger(base: &str, token: &str, project_repo: &str, git_ref: &str, def
         .send_json(serde_json::json!({ "definition": { "id": did }, "sourceBranch": format!("refs/heads/{git_ref}") }))
         .map_err(|e| http_err("Couldn't queue the pipeline", e))?;
     Ok(format!("Pipeline queued on {git_ref}"))
+}
+
+/* ── Beanstalk ────────────────────────────────────────────────────────
+   Basic auth (username + password or access token). Beanstalk's API has no
+   pull-request or CI/pipeline surface, so parity here is connect + repos;
+   the PR/CI commands simply don't match a Beanstalk remote. */
+
+/// The account subdomain of a Beanstalk base URL ({account}.beanstalkapp.com).
+fn beanstalk_account(base: &str) -> String {
+    base.trim_end_matches('/')
+        .split("://")
+        .last()
+        .unwrap_or("")
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .strip_suffix(".beanstalkapp.com")
+        .unwrap_or("")
+        .to_string()
+}
+
+fn beanstalk_repos(base: &str, user: &str, token: &str) -> Result<Vec<RepoRef>> {
+    let account = beanstalk_account(base);
+    let url = format!("{}/api/repositories.json", base.trim_end_matches('/'));
+    let arr: Vec<serde_json::Value> = ureq::get(&url)
+        .set("authorization", &basic_auth(user, token))
+        .set("accept", "application/json")
+        .timeout(Duration::from_secs(20))
+        .call()
+        .map_err(|e| http_err("Couldn't list repositories", e))?
+        .into_json()?;
+    Ok(arr
+        .iter()
+        .map(|w| &w["repository"])
+        .filter(|r| r["vcs"].as_str().unwrap_or("git") == "git")
+        .map(|r| {
+            let name = r["name"].as_str().unwrap_or("");
+            RepoRef {
+                name: r["title"].as_str().filter(|s| !s.is_empty()).unwrap_or(name).to_string(),
+                ssh_url: format!("git@{account}.git.beanstalkapp.com:/{account}/{name}.git"),
+                http_url: format!("https://{account}.git.beanstalkapp.com/{name}.git"),
+                description: String::new(),
+            }
+        })
+        .collect())
+}
+
+fn beanstalk_create(base: &str, user: &str, token: &str, name: &str, private: bool) -> Result<RepoRef> {
+    let _ = private; // Beanstalk has no simple per-repo visibility flag.
+    let account = beanstalk_account(base);
+    let url = format!("{}/api/repositories.json", base.trim_end_matches('/'));
+    let json: serde_json::Value = ureq::post(&url)
+        .set("authorization", &basic_auth(user, token))
+        .set("accept", "application/json")
+        .timeout(Duration::from_secs(20))
+        .send_json(serde_json::json!({ "repository": { "name": name, "title": name, "type_id": "git" } }))
+        .map_err(|e| http_err("Couldn't create repository", e))?
+        .into_json()?;
+    let r = &json["repository"];
+    let slug = r["name"].as_str().unwrap_or(name);
+    Ok(RepoRef {
+        name: r["title"].as_str().filter(|s| !s.is_empty()).unwrap_or(slug).to_string(),
+        ssh_url: format!("git@{account}.git.beanstalkapp.com:/{account}/{slug}.git"),
+        http_url: format!("https://{account}.git.beanstalkapp.com/{slug}.git"),
+        description: String::new(),
+    })
 }
 
 pub(crate) fn http_err(context: &str, e: ureq::Error) -> AccountError {

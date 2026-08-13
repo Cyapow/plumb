@@ -19,11 +19,12 @@ const cfg = computed(() => connectionsStore.config);
 const adding = ref(false);
 const testing = ref<string | null>(null);
 
-type Provider = "github" | "gitlab" | "azure";
+type Provider = "github" | "gitlab" | "azure" | "beanstalk";
 type OAuthProvider = "github" | "gitlab";
 const provider = ref<Provider>("github");
 const baseUrl = ref("");
 const token = ref("");
+const username = ref("");
 const label = ref("");
 const busy = ref(false);
 const formError = ref<string | null>(null);
@@ -57,6 +58,14 @@ const DEFAULTS: Record<
     basePlaceholder: "myorg  or  https://dev.azure.com/myorg",
     tokenPath: (host) => `${host || "https://dev.azure.com"}/_usersSettings/tokens`,
   },
+  beanstalk: {
+    name: "Beanstalk",
+    base: "",
+    scopes: "an account with repository access",
+    baseLabel: "Account — {account}.beanstalkapp.com, or just the account name",
+    basePlaceholder: "myaccount  or  https://myaccount.beanstalkapp.com",
+    tokenPath: (host) => `${host || "https://beanstalkapp.com"}/access_tokens`,
+  },
 };
 
 onMounted(() => {
@@ -69,6 +78,7 @@ function startAdd() {
   provider.value = "github";
   applyProvider();
   token.value = "";
+  username.value = "";
   label.value = "";
   formError.value = null;
 }
@@ -83,6 +93,12 @@ function getToken() {
     openUrl(DEFAULTS.azure.tokenPath(org));
     return;
   }
+  if (provider.value === "beanstalk") {
+    const b = baseUrl.value.trim().replace(/\/$/, "");
+    const acct = b ? (b.startsWith("http") ? b : `https://${b}.beanstalkapp.com`) : "";
+    openUrl(DEFAULTS.beanstalk.tokenPath(acct));
+    return;
+  }
   // For GitLab self-managed, the token page lives on the instance host, not the API base.
   const instance = provider.value === "gitlab" ? (baseUrl.value.replace(/\/?$/, "") || "https://gitlab.com") : "";
   openUrl(DEFAULTS[provider.value].tokenPath(instance));
@@ -91,10 +107,18 @@ function getToken() {
 async function connect() {
   formError.value = null;
   if (!token.value.trim()) return (formError.value = "Paste a personal access token.");
-  if (!baseUrl.value.trim()) return (formError.value = "Enter the API base URL.");
+  if (!baseUrl.value.trim())
+    return (formError.value = provider.value === "azure" || provider.value === "beanstalk" ? "Enter your organisation / account." : "Enter the API base URL.");
+  if (provider.value === "beanstalk" && !username.value.trim()) return (formError.value = "Enter your Beanstalk username.");
   busy.value = true;
   try {
-    await connectAccount(provider.value, baseUrl.value.trim(), token.value.trim(), label.value.trim() || undefined);
+    await connectAccount(
+      provider.value,
+      baseUrl.value.trim(),
+      token.value.trim(),
+      label.value.trim() || undefined,
+      username.value.trim() || undefined,
+    );
     await refreshConnections();
     adding.value = false;
     toast("Account connected");
@@ -205,7 +229,7 @@ function cancelDevice() {
     <div class="list" v-if="cfg.connections.length">
       <div v-for="c in cfg.connections" :key="c.id" class="conn">
         <img v-if="c.avatarUrl" :src="c.avatarUrl" class="avatar" alt="" />
-        <span class="badge" :class="c.provider">{{ ({ github: "GH", gitlab: "GL", azure: "AZ" } as Record<string, string>)[c.provider] ?? "?" }}</span>
+        <span class="badge" :class="c.provider">{{ ({ github: "GH", gitlab: "GL", azure: "AZ", beanstalk: "BS" } as Record<string, string>)[c.provider] ?? "?" }}</span>
         <div class="meta">
           <div class="label">{{ c.label }}</div>
           <div class="sub mono">{{ c.username }} · {{ host(c) }}</div>
@@ -264,17 +288,24 @@ function cancelDevice() {
         <button :class="{ on: provider === 'github' }" @click="provider = 'github'; applyProvider()">GitHub</button>
         <button :class="{ on: provider === 'gitlab' }" @click="provider = 'gitlab'; applyProvider()">GitLab</button>
         <button :class="{ on: provider === 'azure' }" @click="provider = 'azure'; applyProvider()">Azure DevOps</button>
+        <button :class="{ on: provider === 'beanstalk' }" @click="provider = 'beanstalk'; applyProvider()">Beanstalk</button>
       </div>
       <label class="field">
-        <span>{{ provider === "azure" ? "Organisation" : "API base URL" }} <em>— {{ DEFAULTS[provider].baseLabel.split("— ")[1] }}</em></span>
+        <span>{{ provider === "azure" ? "Organisation" : provider === "beanstalk" ? "Account" : "API base URL" }} <em>— {{ DEFAULTS[provider].baseLabel.split("— ")[1] }}</em></span>
         <input v-model="baseUrl" :placeholder="DEFAULTS[provider].basePlaceholder" spellcheck="false" />
       </label>
+      <label v-if="provider === 'beanstalk'" class="field">
+        <span>Username</span>
+        <input v-model="username" placeholder="your Beanstalk login" spellcheck="false" autocomplete="off" />
+      </label>
       <label class="field">
-        <span>Personal access token
+        <span>{{ provider === "beanstalk" ? "Password or access token" : "Personal access token" }}
           <a class="key-link" @click.prevent="getToken">Get a token ↗</a>
         </span>
         <input v-model="token" type="password" placeholder="paste token" spellcheck="false" autocomplete="off" />
-        <div class="scopes-hint mono">Required scope{{ DEFAULTS[provider].scopes.includes(",") ? "s" : "" }}: {{ DEFAULTS[provider].scopes }}</div>
+        <div class="scopes-hint mono">
+          {{ provider === "beanstalk" ? "Use your password or an access token · " : "Required scope" + (DEFAULTS[provider].scopes.includes(",") ? "s" : "") + ": " }}{{ provider === "beanstalk" ? "" : DEFAULTS[provider].scopes }}
+        </div>
       </label>
       <label class="field">
         <span>Label</span>
@@ -290,9 +321,11 @@ function cancelDevice() {
     <button v-else class="add-more" @click="startAdd">+ Connect another account</button>
 
     <div class="note">
-      Multiple GitHub, GitLab &amp; Azure DevOps accounts are supported — including self-managed and
-      Enterprise hosts. Azure DevOps connects with a Personal Access Token. Tokens are validated on
-      connect and stored in your OS keychain.
+      Multiple GitHub, GitLab, Azure DevOps &amp; Beanstalk accounts are supported. For
+      <b>self-managed / Enterprise</b> hosts (GitHub Enterprise, self-managed GitLab, Gitea/Forgejo
+      and other API-compatible servers), pick the matching provider and point the API base URL at
+      your host. Azure DevOps and Beanstalk connect with a token; Beanstalk also takes your username.
+      Tokens are validated on connect and stored in your OS keychain.
     </div>
   </div>
 </template>
@@ -306,6 +339,7 @@ function cancelDevice() {
 .badge.github { border-color: var(--text); color: var(--text); }
 .badge.gitlab { border-color: var(--lane-2); color: var(--lane-2); }
 .badge.azure { border-color: var(--lane-3, #3b82f6); color: var(--lane-3, #3b82f6); }
+.badge.beanstalk { border-color: var(--lane-4, #22a06b); color: var(--lane-4, #22a06b); }
 .meta { min-width: 0; flex: 1; }
 .label { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sub { font-size: 10.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
