@@ -156,8 +156,14 @@ export function listStashes(path: string): Promise<StashEntry[]> {
 export function stashSave(path: string, message?: string): Promise<void> {
   return invoke("stash_save", { path, message: message ?? null });
 }
+export function stashSaveEx(path: string, message: string | null, includeUntracked: boolean, keepIndex: boolean): Promise<void> {
+  return invoke("stash_save_ex", { path, message, includeUntracked, keepIndex });
+}
 export function stashApply(path: string, index: number): Promise<void> {
   return invoke("stash_apply", { path, index });
+}
+export function stashApplyEx(path: string, index: number, pop: boolean, restoreIndex: boolean): Promise<void> {
+  return invoke("stash_apply_ex", { path, index, pop, restoreIndex });
 }
 export function stashPop(path: string, index: number): Promise<void> {
   return invoke("stash_pop", { path, index });
@@ -203,8 +209,29 @@ export function blameFile(path: string, file: string): Promise<BlameLine[]> {
 export function mergeBranch(path: string, name: string): Promise<string> {
   return invoke("merge_branch", { path, name });
 }
+export interface MergeOpts {
+  squash?: boolean;
+  noFf?: boolean;
+  noCommit?: boolean;
+  verifySignatures?: boolean;
+  noVerify?: boolean;
+}
+export function mergeBranchEx(path: string, name: string, o: MergeOpts = {}): Promise<string> {
+  return invoke("merge_branch_ex", {
+    path,
+    name,
+    squash: !!o.squash,
+    noFf: !!o.noFf,
+    noCommit: !!o.noCommit,
+    verifySignatures: !!o.verifySignatures,
+    noVerify: !!o.noVerify,
+  });
+}
 export function rebaseBranch(path: string, onto: string): Promise<string> {
   return invoke("rebase_branch", { path, onto });
+}
+export function rebaseBranchEx(path: string, onto: string, autostash: boolean, noVerify: boolean): Promise<string> {
+  return invoke("rebase_branch_ex", { path, onto, autostash, noVerify });
 }
 
 export type RebaseAction = "pick" | "reword" | "squash" | "fixup" | "drop";
@@ -316,6 +343,28 @@ export function setGitIdentity(
   global: boolean,
 ): Promise<void> {
   return invoke("set_git_identity", { path, name, email, global });
+}
+
+export function getConfig(path: string, keys: string[]): Promise<Record<string, string>> {
+  return invoke("get_config", { path, keys });
+}
+export function setConfig(path: string, key: string, value: string, global = false): Promise<void> {
+  return invoke("set_config", { path, key, value, global });
+}
+export function unsetConfig(path: string, key: string, global = false): Promise<void> {
+  return invoke("unset_config", { path, key, global });
+}
+export function getRepoDescription(path: string): Promise<string> {
+  return invoke("get_repo_description", { path });
+}
+export function setRepoDescription(path: string, text: string): Promise<void> {
+  return invoke("set_repo_description", { path, text });
+}
+export function getGitignore(path: string): Promise<string> {
+  return invoke("get_gitignore", { path });
+}
+export function setGitignore(path: string, text: string): Promise<void> {
+  return invoke("set_gitignore", { path, text });
 }
 
 export interface ChangedFile {
@@ -451,6 +500,42 @@ export interface SubmoduleInfo {
   initialized: boolean;
   modified: boolean;
 }
+/** Which branching model a repo follows. "" = not yet chosen. */
+export type WorkflowType = "" | "gitflow" | "custom" | "github" | "gitlab" | "trunk";
+export interface FlowConfig {
+  initialized: boolean;
+  workflow: WorkflowType;
+  main: string;
+  develop: string;
+  feature: string;
+  release: string;
+  hotfix: string;
+  versiontag: string;
+  environments: string[];
+}
+export function flowConfig(path: string): Promise<FlowConfig> {
+  return invoke("flow_config", { path });
+}
+export function flowInit(path: string, main: string, develop: string, versiontag: string): Promise<string> {
+  return invoke("flow_init", { path, main, develop, versiontag });
+}
+export function flowStart(path: string, kind: string, name: string): Promise<string> {
+  return invoke("flow_start", { path, kind, name });
+}
+export function flowFinish(path: string, kind: string, name: string, version?: string): Promise<string> {
+  return invoke("flow_finish", { path, kind, name, version: version ?? null });
+}
+export function flowSetType(path: string, workflow: WorkflowType): Promise<void> {
+  return invoke("flow_set_type", { path, workflow });
+}
+export function flowSetEnvironments(path: string, csv: string): Promise<void> {
+  return invoke("flow_set_environments", { path, csv });
+}
+/** Check out `target`, merge `source` into it (--no-ff), optionally delete `source`. */
+export function mergeInto(path: string, source: string, target: string, deleteSource: boolean): Promise<string> {
+  return invoke("merge_into", { path, source, target, deleteSource });
+}
+
 export function listSubmodules(path: string): Promise<SubmoduleInfo[]> {
   return invoke("list_submodules", { path });
 }

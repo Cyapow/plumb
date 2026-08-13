@@ -46,20 +46,23 @@ import {
   pullMode,
   deleteRemoteBranch,
   listStashes,
-  stashSave,
   stashApply,
   stashPop,
   stashDrop,
   listTags,
   listFiles,
-  mergeBranch,
-  rebaseBranch,
+  mergeBranchEx,
+  rebaseBranchEx,
   cherryPick,
   revertCommit,
   opAbort,
   opContinue,
   repoState,
   watchRepo,
+  flowConfig,
+  flowStart,
+  flowFinish,
+  type FlowConfig,
   type StashEntry,
   type TagInfo,
   type RepoState,
@@ -105,6 +108,12 @@ import WorktreesDialog from "./components/WorktreesDialog.vue";
 import BisectDialog from "./components/BisectDialog.vue";
 import RunPipelineDialog from "./components/RunPipelineDialog.vue";
 import PipelineDialog from "./components/PipelineDialog.vue";
+import RepoSettingsDialog from "./components/RepoSettingsDialog.vue";
+import RepoInfoDialog from "./components/RepoInfoDialog.vue";
+import IntegrateDialog from "./components/IntegrateDialog.vue";
+import StashSaveDialog from "./components/StashSaveDialog.vue";
+import StashApplyDialog from "./components/StashApplyDialog.vue";
+import WorkflowDialog from "./components/WorkflowDialog.vue";
 import InputDialog from "./components/InputDialog.vue";
 import HomePage from "./components/HomePage.vue";
 import BranchTree from "./components/BranchTree.vue";
@@ -154,6 +163,62 @@ function openRunPipeline(branch?: string) {
   runPipelineOpen.value = true;
 }
 
+const repoSettingsOpen = ref(false);
+const repoInfoOpen = ref(false);
+
+// Guided merge / rebase / stash dialogs.
+const integrateOpen = ref(false);
+const integrateMode = ref<"merge" | "rebase">("merge");
+const integratePreset = ref<string | null>(null);
+function openIntegrate(mode: "merge" | "rebase", branch?: string) {
+  integrateMode.value = mode;
+  integratePreset.value = branch ?? null;
+  integrateOpen.value = true;
+}
+function onIntegrate(mode: "merge" | "rebase", branch: string, opts: Record<string, boolean>) {
+  if (!repo.value) return;
+  const path = repo.value.path;
+  if (mode === "merge") opRun(() => mergeBranchEx(path, branch, opts), "Merge");
+  else opRun(() => rebaseBranchEx(path, branch, !!opts.autostash, !!opts.noVerify), "Rebase");
+}
+const workflowOpen = ref(false);
+
+// Git Flow quick actions (also surfaced in the command palette when initialised).
+async function doFlowStart(kind: string) {
+  if (!repo.value) return;
+  const name = await promptText({ title: `Start ${kind}`, label: "Name", placeholder: kind === "release" ? "1.2.0" : "short-name" });
+  if (name && name.trim()) opRun(() => flowStart(repo.value!.path, kind, name.trim()), `Start ${kind}`);
+}
+// The current branch as a finishable flow branch (feature/release/hotfix/bugfix), if any.
+const flowActive = computed(() => {
+  const f = flowCfg.value;
+  const c = repo.value?.head_branch;
+  if (!f || !f.initialized || !c || (f.workflow !== "gitflow" && f.workflow !== "custom")) return null;
+  for (const kind of ["feature", "release", "hotfix", "bugfix"] as const) {
+    const p = (f as unknown as Record<string, string>)[kind];
+    if (p && c.startsWith(p)) return { kind, name: c.slice(p.length) };
+  }
+  return null;
+});
+async function doFlowFinish() {
+  const a = flowActive.value;
+  if (!a || !repo.value) return;
+  let version: string | undefined;
+  if (a.kind === "release" || a.kind === "hotfix") {
+    const v = await promptText({ title: `Finish ${a.kind}`, label: "Version tag", value: a.name });
+    if (v === null) return;
+    version = v.trim() || a.name;
+  }
+  opRun(() => flowFinish(repo.value!.path, a.kind, a.name, version), `Finish ${a.kind}`);
+}
+
+const stashSaveOpen = ref(false);
+const stashApplyOpen = ref(false);
+const stashApplyTarget = ref<{ index: number; label: string }>({ index: 0, label: "" });
+function openStashApply(index: number, label: string) {
+  stashApplyTarget.value = { index, label };
+  stashApplyOpen.value = true;
+}
 const submodulesOpen = ref(false);
 const worktreesOpen = ref(false);
 const bisectOpen = ref(false);
@@ -292,7 +357,12 @@ function loadExtras(path: string) {
   listRemotes(path).then((r) => (remotes.value = r)).catch(() => (remotes.value = []));
   bisectStatus(path).then((b) => (bisect.value = b)).catch(() => (bisect.value = { active: false, current: null, current_short: null }));
   repoState(path).then((r) => (state.value = r)).catch(() => (state.value = { state: "clean", conflicts: false }));
+  flowConfig(path).then((f) => (flowCfg.value = f)).catch(() => (flowCfg.value = null));
 }
+
+// Current repo's workflow config, used to surface Git Flow start/finish actions
+// in the command palette when a Git Flow model is initialised.
+const flowCfg = ref<FlowConfig | null>(null);
 
 const opLabel = computed(
   () =>
@@ -665,6 +735,9 @@ function handleMenuAction(id: string) {
     case "pull": return hasRepo ? doPull() : undefined;
     case "push": return hasRepo ? void doPush() : undefined;
     case "new_branch": return hasRepo ? void newBranchPrompt() : undefined;
+    case "merge": return hasRepo ? openIntegrate("merge") : undefined;
+    case "rebase": return hasRepo ? openIntegrate("rebase") : undefined;
+    case "flow": return hasRepo ? void (workflowOpen.value = true) : undefined;
     case "stash": return hasRepo ? void doStash() : undefined;
     case "remotes": return hasRepo ? void (remotesOpen.value = true) : undefined;
     case "new_pr": return hasRepo ? openCreatePr() : undefined;
@@ -674,6 +747,8 @@ function handleMenuAction(id: string) {
     case "submodules": return hasRepo ? void (submodulesOpen.value = true) : undefined;
     case "worktrees": return hasRepo ? void (worktreesOpen.value = true) : undefined;
     case "bisect": return hasRepo ? void (bisect.value.active ? doBisectReset() : (bisectOpen.value = true)) : undefined;
+    case "repo_settings": return hasRepo ? void (repoSettingsOpen.value = true) : undefined;
+    case "repo_info": return hasRepo ? void (repoInfoOpen.value = true) : undefined;
     case "github": return void openUrl("https://github.com").catch(() => {});
   }
 }
@@ -696,6 +771,8 @@ const paletteItems = computed<PaletteItem[]>(() => {
     { id: "a-open", label: "Open a repository…", group: "Action", action: chooseRepo },
     { id: "a-editor", label: "Open in editor", group: "Action", action: () => repo.value && openInEditor(repo.value.path).catch(() => {}) },
     { id: "a-remotes", label: "Manage remotes…", group: "Action", action: () => (remotesOpen.value = true) },
+    { id: "a-reposettings", label: "Repository settings…", group: "Action", action: () => (repoSettingsOpen.value = true) },
+    { id: "a-repoinfo", label: "Repository info…", group: "Action", action: () => (repoInfoOpen.value = true) },
     { id: "a-newpr", label: "New pull / merge request…", group: "Action", action: () => openCreatePr() },
     { id: "a-runci", label: "Run pipeline…", group: "Action", action: () => openRunPipeline() },
     { id: "a-reflog", label: "History (reflog) — recover lost commits…", group: "Action", action: () => (reflogOpen.value = true) },
@@ -704,11 +781,26 @@ const paletteItems = computed<PaletteItem[]>(() => {
     { id: "a-worktrees", label: "Worktrees…", group: "Action", action: () => (worktreesOpen.value = true) },
     { id: "a-bisect", label: bisect.value.active ? "Bisect — end" : "Bisect — start…", group: "Action", action: () => (bisect.value.active ? doBisectReset() : (bisectOpen.value = true)) },
     { id: "a-newbranch", label: "New branch…", group: "Action", action: newBranchPrompt },
+    { id: "a-merge", label: "Merge…", group: "Action", action: () => openIntegrate("merge") },
+    { id: "a-rebase", label: "Rebase…", group: "Action", action: () => openIntegrate("rebase") },
+    { id: "a-flow", label: "Workflows…", group: "Action", action: () => (workflowOpen.value = true) },
     { id: "a-settings", label: "Settings", group: "Action", action: () => openSettings() },
     { id: "a-accounts", label: "Accounts", group: "Action", action: () => openSettings("accounts") },
     { id: "a-theme", label: "Toggle theme", group: "Action", action: toggleTheme },
     { id: "a-stash", label: "Stash all changes", group: "Action", action: doStash },
   );
+  // Git Flow branch actions when a Git Flow model is initialised.
+  const f = flowCfg.value;
+  if (f && f.initialized && (f.workflow === "gitflow" || f.workflow === "custom")) {
+    items.push(
+      { id: "flow-feature", label: "Git Flow: start feature…", group: "Action", action: () => doFlowStart("feature") },
+      { id: "flow-release", label: "Git Flow: start release…", group: "Action", action: () => doFlowStart("release") },
+      { id: "flow-hotfix", label: "Git Flow: start hotfix…", group: "Action", action: () => doFlowStart("hotfix") },
+    );
+    if (flowActive.value)
+      items.push({ id: "flow-finish", label: `Git Flow: finish ${flowActive.value.kind} (${flowActive.value.name})`, group: "Action", action: doFlowFinish });
+  }
+
   if (undoOp.value)
     items.push({ id: "a-undo", label: `Undo commit "${undoOp.value.message.split("\n")[0]}"`, group: "Action", action: undo });
   if (redoOp.value)
@@ -911,14 +1003,14 @@ function branchMenu(e: MouseEvent, b: BranchInfo) {
     },
     { separator: true, label: "" },
     {
-      label: `Merge ${b.name} into ${head}`,
+      label: `Merge ${b.name} into ${head}…`,
       disabled: b.is_head,
-      action: () => opRun(() => mergeBranch(path, b.name), "Merge"),
+      action: () => openIntegrate("merge", b.name),
     },
     {
-      label: `Rebase ${head} onto ${b.name}`,
+      label: `Rebase ${head} onto ${b.name}…`,
       disabled: b.is_head,
-      action: () => opRun(() => rebaseBranch(path, b.name), "Rebase"),
+      action: () => openIntegrate("rebase", b.name),
     },
     { separator: true, label: "" },
     { label: `Compare ${b.name} with ${head}`, disabled: b.is_head, action: () => openCompare(b.name) },
@@ -955,11 +1047,9 @@ function branchMenu(e: MouseEvent, b: BranchInfo) {
 }
 
 /* ── Stashes ──────────────────────────────────────────────────────── */
-async function doStash() {
+function doStash() {
   if (!repo.value) return;
-  const msg = await promptText({ title: "Stash changes", label: "Message (optional)", confirmLabel: "Stash" });
-  if (msg === null) return; // cancelled
-  runOp(() => stashSave(repo.value!.path, msg || undefined), "Changes stashed");
+  stashSaveOpen.value = true;
 }
 // Ensure a commit identity exists, prompting for one if not. Returns false if
 // the user cancels. Shared by the initial-commit flow.
@@ -1031,6 +1121,7 @@ function stashMenu(e: MouseEvent, s: StashEntry) {
   openContextMenu(e, [
     { label: "Apply", action: () => runOp(() => stashApply(path, s.index), "Stash applied") },
     { label: "Pop (apply & drop)", action: () => runOp(() => stashPop(path, s.index), "Stash popped") },
+    { label: "Apply with options…", action: () => openStashApply(s.index, s.message || `stash@{${s.index}}`) },
     { separator: true, label: "" },
     {
       label: "Drop",
@@ -1166,6 +1257,15 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           <span class="spinner"></span><span class="sync-label">{{ syncLabel }}…</span>
         </div>
 
+      <div class="vsep"></div>
+
+      <div class="repo-actions">
+        <button class="btn" @click="openIntegrate('merge')" title="Merge a branch into the current branch">Merge</button>
+        <button class="btn" @click="openIntegrate('rebase')" title="Rebase the current branch onto another">Rebase</button>
+        <button class="btn" @click="doStash" title="Stash changes with options">Stash</button>
+        <button class="btn" @click="workflowOpen = true" title="Workflows — Git Flow, GitHub Flow, GitLab Flow and more">Workflows</button>
+      </div>
+
       <div class="spacer" data-tauri-drag-region></div>
 
       <div class="search">
@@ -1236,7 +1336,11 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
       <!-- Sidebar -->
       <aside class="sidebar" :style="{ width: sidebarWidth + 'px' }">
         <div class="repo-head">
-          <div class="repo-title">{{ repo.name }}</div>
+          <div class="repo-title-row">
+            <div class="repo-title">{{ repo.name }}</div>
+            <button class="rh-btn" title="Repository info" @click="repoInfoOpen = true">ⓘ</button>
+            <button class="rh-btn" title="Repository settings" @click="repoSettingsOpen = true">⚙</button>
+          </div>
           <div class="repo-path mono">{{ repo.path }}</div>
         </div>
 
@@ -1477,6 +1581,28 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
       :current-branch="pipelineRef ?? repo.head_branch"
       @triggered="() => repo && loadCiMap(repo.path)"
     />
+    <RepoSettingsDialog v-if="repo" v-model="repoSettingsOpen" :repo-path="repo.path" :repo-name="repo.name" />
+    <RepoInfoDialog v-if="repo" v-model="repoInfoOpen" :repo-path="repo.path" />
+    <IntegrateDialog
+      v-if="repo"
+      v-model="integrateOpen"
+      :mode="integrateMode"
+      :branches="localBranches.map((b) => b.name)"
+      :current-branch="repo.head_branch"
+      :preset-branch="integratePreset"
+      @confirm="onIntegrate"
+    />
+    <WorkflowDialog
+      v-if="repo"
+      v-model="workflowOpen"
+      :repo-path="repo.path"
+      :branches="localBranches.map((b) => b.name)"
+      :current-branch="repo.head_branch"
+      @done="refresh"
+      @create-pr="openCreatePr"
+    />
+    <StashSaveDialog v-if="repo" v-model="stashSaveOpen" :repo-path="repo.path" @done="refresh" />
+    <StashApplyDialog v-if="repo" v-model="stashApplyOpen" :repo-path="repo.path" :index="stashApplyTarget.index" :label="stashApplyTarget.label" @done="refresh" />
     <SubmodulesDialog v-if="repo" v-model="submodulesOpen" :repo-path="repo.path" @open="loadRepo" />
     <WorktreesDialog v-if="repo" v-model="worktreesOpen" :repo-path="repo.path" :branches="localBranches.map((b) => b.name)" @open="loadRepo" />
     <BisectDialog
@@ -1646,6 +1772,7 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
 .icon-btn:disabled { opacity: 0.35; }
 
 .sync-actions { display: flex; gap: 2px; }
+.repo-actions { display: flex; gap: 2px; }
 .btn {
   height: 30px;
   padding: 0 14px;
@@ -1716,7 +1843,7 @@ kbd {
 .trust { margin-top: var(--space-6); font-size: 11.5px; color: var(--text-faint); }
 
 /* ── Workspace ───────────────────────────────────────────────────── */
-.workspace { flex: 1; display: flex; min-height: 0; }
+.workspace { flex: 1; display: flex; min-height: 0; overflow: hidden; }
 
 .sidebar {
   width: 250px;
@@ -1728,6 +1855,10 @@ kbd {
   flex-direction: column;
 }
 .repo-head { padding: 14px var(--space-3); border-bottom: 1px solid var(--raised); }
+.repo-title-row { display: flex; align-items: center; gap: 4px; }
+.repo-title-row .repo-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rh-btn { flex: none; width: 22px; height: 20px; background: transparent; border: none; color: var(--text-faint); font-size: 12px; cursor: pointer; }
+.rh-btn:hover { color: var(--accent); }
 .repo-title { font-size: 13px; font-weight: 700; }
 .repo-path { font-size: 10.5px; color: var(--text-faint); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 

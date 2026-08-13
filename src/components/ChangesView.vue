@@ -432,7 +432,7 @@ function expand() {
           :title="defaultProvider ? 'Change AI provider' : 'Set up an AI provider'"
         >
           <template v-if="defaultProvider">
-            <span class="sq-priv"></span>{{ defaultProvider.label }}
+            <span class="sq-priv"></span><span class="pp-label">{{ defaultProvider.label }}</span>
           </template>
           <template v-else>Set up AI…</template>
         </button>
@@ -485,8 +485,8 @@ function expand() {
 </template>
 
 <style scoped>
-.changes { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-.cols { flex: 1; display: flex; min-height: 0; }
+.changes { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.cols { flex: 1; display: flex; min-height: 0; overflow: hidden; }
 
 /* affordances */
 .file-row, .tick, .stage-all, .btn:not(:disabled), .toggle, .chk { cursor: pointer; }
@@ -544,7 +544,7 @@ function expand() {
 .files-empty { padding: var(--space-3) var(--space-4); font-size: 11.5px; color: var(--text-faint); }
 .files-empty.big { padding: var(--space-6) var(--space-4); }
 
-.diff-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.diff-col { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .diff-head {
   height: 30px; flex: none;
   display: flex; align-items: center; gap: var(--space-2);
@@ -559,7 +559,7 @@ function expand() {
 .diff-seg button.on { background: var(--accent); color: var(--accent-on); border-color: var(--accent); }
 .diff-seg button:disabled { opacity: 0.4; cursor: default; }
 .diff-head .expand { width: 28px; height: 22px; background: var(--raised); border: 1px solid var(--line); cursor: pointer; font-size: 13px; }
-.diff-pane { flex: 1; min-width: 0; }
+.diff-pane { flex: 1; min-width: 0; min-height: 0; overflow: auto; }
 
 /* Composer */
 .composer {
@@ -590,9 +590,12 @@ function expand() {
 .gen-alt { font-size: 11.5px; font-weight: 600; padding: 6px 10px; background: var(--raised); border: 1px solid var(--line); color: var(--text-mid); cursor: pointer; }
 .provider-pick {
   display: flex; align-items: center; gap: var(--space-2);
+  max-width: 220px;
   font-size: 11px; padding: 5px 10px; background: var(--raised); border: 1px solid var(--line); color: var(--text-mid); cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .provider-pick .sq-priv { width: 8px; height: 8px; background: var(--text-faint); flex: none; }
+.provider-pick .pp-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .toggle { display: flex; align-items: center; gap: var(--space-2); font-size: 10.5px; color: var(--text-dim); cursor: pointer; }
 
 .ai-chip {

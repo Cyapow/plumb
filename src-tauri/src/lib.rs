@@ -73,7 +73,10 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .item(&mi("push", "Push", Some("CmdOrCtrl+P"))?)
         .separator()
         .item(&mi("new_branch", "New Branch…", Some("CmdOrCtrl+B"))?)
-        .item(&mi("stash", "Stash All Changes", Some("CmdOrCtrl+Shift+S"))?)
+        .item(&mi("merge", "Merge…", None)?)
+        .item(&mi("rebase", "Rebase…", None)?)
+        .item(&mi("flow", "Workflows…", None)?)
+        .item(&mi("stash", "Stash Changes…", Some("CmdOrCtrl+Shift+S"))?)
         .separator()
         .item(&mi("new_pr", "New Pull / Merge Request…", None)?)
         .item(&mi("run_pipeline", "Run Pipeline…", None)?)
@@ -84,6 +87,9 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .item(&mi("submodules", "Submodules…", None)?)
         .item(&mi("worktrees", "Worktrees…", None)?)
         .item(&mi("bisect", "Bisect…", None)?)
+        .separator()
+        .item(&mi("repo_info", "Repository Info…", None)?)
+        .item(&mi("repo_settings", "Repository Settings…", Some("CmdOrCtrl+;"))?)
         .build()?;
 
     let window_menu = SubmenuBuilder::new(app, "Window")
@@ -170,7 +176,9 @@ pub fn run() {
             git::clone_repo,
             git::list_stashes,
             git::stash_save,
+            git::stash_save_ex,
             git::stash_apply,
+            git::stash_apply_ex,
             git::stash_pop,
             git::stash_drop,
             git::list_tags,
@@ -178,7 +186,9 @@ pub fn run() {
             git::file_history,
             git::blame_file,
             git::merge_branch,
+            git::merge_branch_ex,
             git::rebase_branch,
+            git::rebase_branch_ex,
             git::cherry_pick,
             git::revert_commit,
             git::op_abort,
@@ -192,6 +202,13 @@ pub fn run() {
             git::file_diff,
             git::git_identity,
             git::set_git_identity,
+            git::get_config,
+            git::set_config,
+            git::unset_config,
+            git::get_repo_description,
+            git::set_repo_description,
+            git::get_gitignore,
+            git::set_gitignore,
             git::initial_commit,
             git::list_remote_branches,
             git::connect_remote_branch,
@@ -218,6 +235,13 @@ pub fn run() {
             git::pull_mode,
             git::rebase_interactive,
             git::delete_remote_branch,
+            git::flow_config,
+            git::flow_init,
+            git::flow_start,
+            git::flow_finish,
+            git::flow_set_type,
+            git::flow_set_environments,
+            git::merge_into,
             git::list_submodules,
             git::update_submodules,
             git::list_worktrees,
