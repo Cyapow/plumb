@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 export interface Connection {
   id: string;
-  provider: string; // "github" | "gitlab"
+  provider: string; // "github" | "gitlab" | "azure"
   label: string;
   baseUrl: string;
   username: string;
