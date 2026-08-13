@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 export interface Connection {
   id: string;
-  provider: string; // "github" | "gitlab"
+  provider: string; // "github" | "gitlab" | "azure"
   label: string;
   baseUrl: string;
   username: string;
@@ -23,8 +23,9 @@ export function connectAccount(
   baseUrl: string,
   token: string,
   label?: string,
+  username?: string,
 ): Promise<Connection> {
-  return invoke("connect_account", { provider, baseUrl, token, label: label ?? null });
+  return invoke("connect_account", { provider, baseUrl, token, label: label ?? null, username: username ?? null });
 }
 
 export function removeConnection(id: string): Promise<ConnectionConfig> {

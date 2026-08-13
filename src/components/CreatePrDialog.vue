@@ -24,7 +24,7 @@ const stage = ref<"push" | "create" | null>(null);
 const error = ref<string | null>(null);
 
 const noun = computed(() => (provider.value === "gitlab" ? "merge request" : "pull request"));
-const hasAccount = computed(() => provider.value === "github" || provider.value === "gitlab");
+const hasAccount = computed(() => ["github", "gitlab", "azure"].includes(provider.value));
 
 watch(open, async (o) => {
   if (!o) return;

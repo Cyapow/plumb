@@ -1,8 +1,11 @@
-//! Multi-account connections to GitHub and GitLab (incl. self-managed/enterprise).
+//! Multi-account connections to GitHub, GitLab, and Azure DevOps (incl.
+//! self-managed/enterprise).
 //!
 //! Connections are a *list* — the headline differentiator over GitKraken's
-//! one-account-per-provider model. Each connection's token lives in the macOS
-//! Keychain; only non-secret metadata (provider, host, username) is persisted.
+//! one-account-per-provider model. Each connection's token lives in the OS
+//! keychain; only non-secret metadata (provider, host, username) is persisted.
+//! GitHub/GitLab authenticate a token as `Bearer`; Azure DevOps sends a PAT as
+//! HTTP Basic and is organisation-scoped (the org lives in the base URL).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -119,14 +122,19 @@ pub async fn connect_account(
     base_url: String,
     token: String,
     label: Option<String>,
+    username: Option<String>,
 ) -> Result<Connection> {
     let base = normalize_base(&provider, &base_url);
-    let (username, avatar_url) = {
-        let (p, b, t) = (provider.clone(), base.clone(), token.clone());
-        tauri::async_runtime::spawn_blocking(move || fetch_user(&p, &b, &t))
+    let user_in = username.unwrap_or_default();
+    let (fetched, avatar_url) = {
+        let (p, b, t, u) = (provider.clone(), base.clone(), token.clone(), user_in.clone());
+        tauri::async_runtime::spawn_blocking(move || fetch_user(&p, &b, &t, &u))
             .await
             .map_err(|e| AccountError::Msg(e.to_string()))??
     };
+    // Basic-auth providers (Beanstalk) need the entered username preserved for
+    // future requests; token providers use whatever the API reported.
+    let username = if fetched.is_empty() { user_in } else { fetched };
 
     let id = new_id(&provider);
     store_token(&id, &token)?;
@@ -156,7 +164,7 @@ pub async fn test_connection(app: AppHandle, id: String) -> Result<String> {
         .ok_or_else(|| AccountError::Msg("Connection not found.".into()))?;
     let token = read_token(&id)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let (user, _) = fetch_user(&conn.provider, &conn.base_url, &token)?;
+        let (user, _) = fetch_user(&conn.provider, &conn.base_url, &token, &conn.username)?;
         Ok(format!("Signed in as {user}."))
     })
     .await
@@ -166,6 +174,27 @@ pub async fn test_connection(app: AppHandle, id: String) -> Result<String> {
 /// Default API base per provider when the user leaves it blank.
 fn normalize_base(provider: &str, base_url: &str) -> String {
     let b = base_url.trim().trim_end_matches('/');
+    // Azure DevOps is organisation-scoped: accept a full org URL, or just the
+    // organisation name (→ https://dev.azure.com/{org}).
+    if provider == "azure" {
+        return if b.is_empty() {
+            String::new()
+        } else if b.starts_with("http") {
+            b.to_string()
+        } else {
+            format!("https://dev.azure.com/{b}")
+        };
+    }
+    // Beanstalk is account-scoped: accept a full URL or just the account name.
+    if provider == "beanstalk" {
+        return if b.is_empty() {
+            String::new()
+        } else if b.starts_with("http") {
+            b.to_string()
+        } else {
+            format!("https://{b}.beanstalkapp.com")
+        };
+    }
     if !b.is_empty() {
         return b.to_string();
     }
@@ -175,7 +204,57 @@ fn normalize_base(provider: &str, base_url: &str) -> String {
     }
 }
 
-fn fetch_user(provider: &str, base: &str, token: &str) -> Result<(String, String)> {
+/// Azure DevOps authenticates a PAT via HTTP Basic with an empty username and
+/// the token as the password.
+fn azure_basic(token: &str) -> String {
+    let raw = format!(":{token}");
+    format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(raw))
+}
+
+/// The organisation name a connection's base URL points at
+/// (dev.azure.com/{org} or {org}.visualstudio.com).
+fn azure_org_of(base_url: &str) -> String {
+    let no_scheme = base_url.trim_end_matches('/').split("://").last().unwrap_or("");
+    let host = no_scheme.split('/').next().unwrap_or("");
+    if host == "dev.azure.com" {
+        return no_scheme.split('/').nth(1).unwrap_or("").to_string();
+    }
+    if let Some(org) = host.strip_suffix(".visualstudio.com") {
+        return org.to_string();
+    }
+    no_scheme.split('/').last().unwrap_or("").to_string()
+}
+
+/// Extract (org, project, repo) from an Azure DevOps remote URL's (host, path).
+/// Handles dev.azure.com (HTTPS + ssh.dev.azure.com) and {org}.visualstudio.com.
+fn azure_ids(host: &str, path: &str) -> Option<(String, String, String)> {
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if host == "dev.azure.com" {
+        // {org}/{project}/_git/{repo}
+        let git = segs.iter().position(|s| *s == "_git")?;
+        let org = segs.first()?.to_string();
+        let project = segs.get(git.checked_sub(1)?)?.to_string();
+        let repo = segs.get(git + 1)?.to_string();
+        return Some((org, project, repo));
+    }
+    if host == "ssh.dev.azure.com" {
+        // v3/{org}/{project}/{repo}
+        let i = segs.iter().position(|s| *s == "v3").map(|p| p + 1).unwrap_or(0);
+        return Some((segs.get(i)?.to_string(), segs.get(i + 1)?.to_string(), segs.get(i + 2)?.to_string()));
+    }
+    if let Some(sub) = host.strip_suffix(".visualstudio.com") {
+        // HTTPS: {project}/_git/{repo}
+        if let Some(git) = segs.iter().position(|s| *s == "_git") {
+            return Some((sub.to_string(), segs.get(git.checked_sub(1)?)?.to_string(), segs.get(git + 1)?.to_string()));
+        }
+        // SSH (vs-ssh.visualstudio.com): v3/{org}/{project}/{repo}
+        let i = segs.iter().position(|s| *s == "v3").map(|p| p + 1).unwrap_or(0);
+        return Some((segs.get(i)?.to_string(), segs.get(i + 1)?.to_string(), segs.get(i + 2)?.to_string()));
+    }
+    None
+}
+
+fn fetch_user(provider: &str, base: &str, token: &str, user: &str) -> Result<(String, String)> {
     match provider {
         "github" => {
             let url = format!("{}/user", base.trim_end_matches('/'));
@@ -207,8 +286,81 @@ fn fetch_user(provider: &str, base: &str, token: &str) -> Result<(String, String
                 json["avatar_url"].as_str().unwrap_or("").to_string(),
             ))
         }
+        "azure" => {
+            // PAT via Basic auth; validate against the org's connectionData.
+            if base.trim().is_empty() {
+                return Err(AccountError::Msg("Enter your Azure DevOps organisation.".into()));
+            }
+            let url = format!(
+                "{}/_apis/connectionData?connectOptions=none&api-version=7.1-preview.1",
+                base.trim_end_matches('/')
+            );
+            let json: serde_json::Value = ureq::get(&url)
+                .set("authorization", &azure_basic(token))
+                .set("accept", "application/json")
+                .timeout(Duration::from_secs(15))
+                .call()
+                .map_err(|e| http_err("Azure DevOps sign-in failed", e))?
+                .into_json()?;
+            let u = &json["authenticatedUser"];
+            let name = u["providerDisplayName"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .or_else(|| u["customDisplayName"].as_str())
+                .unwrap_or("")
+                .to_string();
+            Ok((name, String::new()))
+        }
+        "beanstalk" => {
+            // Basic auth (username + password/access token); validate against
+            // the currently-authenticated user.
+            if user.trim().is_empty() {
+                return Err(AccountError::Msg("Enter your Beanstalk username.".into()));
+            }
+            let url = format!("{}/api/users/current.json", base.trim_end_matches('/'));
+            let json: serde_json::Value = ureq::get(&url)
+                .set("authorization", &basic_auth(user, token))
+                .set("accept", "application/json")
+                .timeout(Duration::from_secs(15))
+                .call()
+                .map_err(|e| http_err("Beanstalk sign-in failed", e))?
+                .into_json()?;
+            let u = &json["user"];
+            let login = u["login"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .or_else(|| u["name"].as_str())
+                .unwrap_or(user)
+                .to_string();
+            Ok((login, String::new()))
+        }
         other => Err(AccountError::Msg(format!("Unknown provider '{other}'."))),
     }
+}
+
+/// HTTP Basic header from a username and secret.
+fn basic_auth(user: &str, secret: &str) -> String {
+    let raw = format!("{user}:{secret}");
+    format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(raw))
+}
+
+/// Find the connected account serving this remote (host, path), returning it
+/// with the provider-specific repo id the API expects: "owner/repo" for GitHub,
+/// "group/project" for GitLab, "project/repo" for Azure (the org is already in
+/// the connection's base URL).
+fn match_conn<'a>(cfg: &'a ConnectionConfig, host: &str, path: &str) -> Option<(&'a Connection, String)> {
+    for c in &cfg.connections {
+        if c.provider == "azure" {
+            if let Some((org, project, repo)) = azure_ids(host, path) {
+                if azure_org_of(&c.base_url).eq_ignore_ascii_case(&org) {
+                    return Some((c, format!("{project}/{repo}")));
+                }
+            }
+        } else if conn_web_host(c) == host {
+            return Some((c, path.to_string()));
+        }
+    }
+    None
 }
 
 /* ── OAuth (no central server) ────────────────────────────────────── */
@@ -302,7 +454,7 @@ pub async fn github_device_poll(
     let (token, username, avatar) =
         tauri::async_runtime::spawn_blocking(move || -> Result<(String, String, String)> {
             let token = poll_github(&client_id, &device_code, interval)?;
-            let (u, a) = fetch_user("github", "https://api.github.com", &token)?;
+            let (u, a) = fetch_user("github", "https://api.github.com", &token, "")?;
             Ok((token, u, a))
         })
         .await
@@ -346,7 +498,7 @@ pub async fn gitlab_oauth_login(app: AppHandle, client_id: String) -> Result<Con
     let (token, username, avatar) =
         tauri::async_runtime::spawn_blocking(move || -> Result<(String, String, String)> {
             let token = gitlab_pkce(&client_id, base)?;
-            let (u, a) = fetch_user("gitlab", base, &token)?;
+            let (u, a) = fetch_user("gitlab", base, &token, "")?;
             Ok((token, u, a))
         })
         .await
@@ -580,13 +732,14 @@ pub async fn list_pull_requests(app: AppHandle, repo_path: String) -> Result<PrL
     for (_, url) in &remotes {
         if let Some((host, path)) = parse_remote(url) {
             matched_host.get_or_insert(host.clone());
-            if let Some(conn) = cfg.connections.iter().find(|c| conn_web_host(c) == host) {
+            if let Some((conn, repo_id)) = match_conn(&cfg, &host, &path) {
                 let token = read_token(&conn.id)?;
                 let provider = conn.provider.clone();
                 let base = conn.base_url.clone();
                 let items = tauri::async_runtime::spawn_blocking(move || match provider.as_str() {
-                    "github" => github_prs(&base, &token, &path),
-                    "gitlab" => gitlab_mrs(&base, &token, &path),
+                    "github" => github_prs(&base, &token, &repo_id),
+                    "gitlab" => gitlab_mrs(&base, &token, &repo_id),
+                    "azure" => azure_prs(&base, &token, &repo_id),
                     _ => Ok(Vec::new()),
                 })
                 .await
@@ -626,12 +779,13 @@ pub async fn list_ci_statuses(app: AppHandle, repo_path: String) -> Result<Vec<C
     remotes.sort_by_key(|(n, _)| if n == "origin" { 0 } else { 1 });
     for (_, url) in &remotes {
         if let Some((host, path)) = parse_remote(url) {
-            if let Some(conn) = cfg.connections.iter().find(|c| conn_web_host(c) == host) {
+            if let Some((conn, repo_id)) = match_conn(&cfg, &host, &path) {
                 let token = read_token(&conn.id)?;
                 let (provider, base) = (conn.provider.clone(), conn.base_url.clone());
                 return tauri::async_runtime::spawn_blocking(move || match provider.as_str() {
-                    "github" => Ok(github_ci_map(&base, &token, &path)),
-                    "gitlab" => Ok(gitlab_ci_map(&base, &token, &urlencode(&path))),
+                    "github" => Ok(github_ci_map(&base, &token, &repo_id)),
+                    "gitlab" => Ok(gitlab_ci_map(&base, &token, &urlencode(&repo_id))),
+                    "azure" => Ok(azure_ci_map(&base, &token, &repo_id)),
                     _ => Ok(Vec::new()),
                 })
                 .await
@@ -783,12 +937,13 @@ pub async fn pipeline_detail(app: AppHandle, repo_path: String, sha: String) -> 
     remotes.sort_by_key(|(n, _)| if n == "origin" { 0 } else { 1 });
     for (_, url) in &remotes {
         if let Some((host, path)) = parse_remote(url) {
-            if let Some(conn) = cfg.connections.iter().find(|c| conn_web_host(c) == host) {
+            if let Some((conn, repo_id)) = match_conn(&cfg, &host, &path) {
                 let token = read_token(&conn.id)?;
                 let (provider, base) = (conn.provider.clone(), conn.base_url.clone());
                 return tauri::async_runtime::spawn_blocking(move || match provider.as_str() {
-                    "github" => Ok(github_pipeline_detail(&base, &token, &path, &sha)),
-                    "gitlab" => Ok(gitlab_pipeline_detail(&base, &token, &urlencode(&path), &sha)),
+                    "github" => Ok(github_pipeline_detail(&base, &token, &repo_id, &sha)),
+                    "gitlab" => Ok(gitlab_pipeline_detail(&base, &token, &urlencode(&repo_id), &sha)),
+                    "azure" => Ok(azure_pipeline_detail(&base, &token, &repo_id, &sha)),
                     _ => Ok(Vec::new()),
                 })
                 .await
@@ -807,17 +962,20 @@ pub async fn job_log(app: AppHandle, repo_path: String, job_id: String) -> Resul
     remotes.sort_by_key(|(n, _)| if n == "origin" { 0 } else { 1 });
     for (_, url) in &remotes {
         if let Some((host, path)) = parse_remote(url) {
-            if let Some(conn) = cfg.connections.iter().find(|c| conn_web_host(c) == host) {
+            if let Some((conn, repo_id)) = match_conn(&cfg, &host, &path) {
                 let token = read_token(&conn.id)?;
                 let (provider, base) = (conn.provider.clone(), conn.base_url.clone());
                 return tauri::async_runtime::spawn_blocking(move || {
+                    if provider == "azure" {
+                        return azure_job_log(&base, &token, &repo_id, &job_id);
+                    }
                     let (url, gh) = match provider.as_str() {
                         "github" => (
-                            format!("{}/repos/{}/actions/jobs/{}/logs", base.trim_end_matches('/'), path, job_id),
+                            format!("{}/repos/{}/actions/jobs/{}/logs", base.trim_end_matches('/'), repo_id, job_id),
                             true,
                         ),
                         "gitlab" => (
-                            format!("{}/api/v4/projects/{}/jobs/{}/trace", base.trim_end_matches('/'), urlencode(&path), job_id),
+                            format!("{}/api/v4/projects/{}/jobs/{}/trace", base.trim_end_matches('/'), urlencode(&repo_id), job_id),
                             false,
                         ),
                         _ => return Err(AccountError::Msg("Unsupported provider.".into())),
@@ -856,7 +1014,7 @@ pub async fn pipeline_action(app: AppHandle, repo_path: String, id: String, acti
     remotes.sort_by_key(|(n, _)| if n == "origin" { 0 } else { 1 });
     for (_, url) in &remotes {
         if let Some((host, path)) = parse_remote(url) {
-            if let Some(conn) = cfg.connections.iter().find(|c| conn_web_host(c) == host) {
+            if let Some((conn, repo_id)) = match_conn(&cfg, &host, &path) {
                 let token = read_token(&conn.id)?;
                 let (provider, base) = (conn.provider.clone(), conn.base_url.clone());
                 return tauri::async_runtime::spawn_blocking(move || {
@@ -865,18 +1023,21 @@ pub async fn pipeline_action(app: AppHandle, repo_path: String, id: String, acti
                         "cancel" => ("cancel", "Cancelling"),
                         _ => return Err(AccountError::Msg("action must be retry/cancel".into())),
                     };
+                    if provider == "azure" {
+                        return azure_pipeline_action(&base, &token, &repo_id, &id, verb).map(|_| format!("{ok} pipeline"));
+                    }
                     let url = match provider.as_str() {
                         "github" => format!(
                             "{}/repos/{}/actions/runs/{}/{}",
                             base.trim_end_matches('/'),
-                            path,
+                            repo_id,
                             id,
                             if verb == "retry" { "rerun" } else { "cancel" }
                         ),
                         "gitlab" => format!(
                             "{}/api/v4/projects/{}/pipelines/{}/{}",
                             base.trim_end_matches('/'),
-                            urlencode(&path),
+                            urlencode(&repo_id),
                             id,
                             verb
                         ),
@@ -1020,15 +1181,19 @@ pub async fn list_workflows(app: AppHandle, repo_path: String) -> Result<Vec<Wor
     remotes.sort_by_key(|(n, _)| if n == "origin" { 0 } else { 1 });
     for (_, url) in &remotes {
         if let Some((host, path)) = parse_remote(url) {
-            if let Some(conn) = cfg.connections.iter().find(|c| conn_web_host(c) == host) {
-                if conn.provider != "github" {
+            if let Some((conn, repo_id)) = match_conn(&cfg, &host, &path) {
+                let (provider, base) = (conn.provider.clone(), conn.base_url.clone());
+                if provider != "github" && provider != "azure" {
                     return Ok(Vec::new());
                 }
                 let token = read_token(&conn.id)?;
-                let base = conn.base_url.clone();
-                return tauri::async_runtime::spawn_blocking(move || github_workflows(&base, &token, &path))
-                    .await
-                    .map_err(|e| AccountError::Msg(e.to_string()))?;
+                return tauri::async_runtime::spawn_blocking(move || match provider.as_str() {
+                    "github" => github_workflows(&base, &token, &repo_id),
+                    "azure" => azure_definitions(&base, &token, &repo_id),
+                    _ => Ok(Vec::new()),
+                })
+                .await
+                .map_err(|e| AccountError::Msg(e.to_string()))?;
             }
         }
     }
@@ -1073,12 +1238,13 @@ pub async fn trigger_pipeline(
     remotes.sort_by_key(|(n, _)| if n == "origin" { 0 } else { 1 });
     for (_, url) in &remotes {
         if let Some((host, path)) = parse_remote(url) {
-            if let Some(conn) = cfg.connections.iter().find(|c| conn_web_host(c) == host) {
+            if let Some((conn, repo_id)) = match_conn(&cfg, &host, &path) {
                 let token = read_token(&conn.id)?;
                 let (provider, base) = (conn.provider.clone(), conn.base_url.clone());
                 return tauri::async_runtime::spawn_blocking(move || match provider.as_str() {
-                    "github" => github_dispatch(&base, &token, &path, &git_ref, workflow_id.as_deref()),
-                    "gitlab" => gitlab_trigger(&base, &token, &urlencode(&path), &git_ref),
+                    "github" => github_dispatch(&base, &token, &repo_id, &git_ref, workflow_id.as_deref()),
+                    "gitlab" => gitlab_trigger(&base, &token, &urlencode(&repo_id), &git_ref),
+                    "azure" => azure_trigger(&base, &token, &repo_id, &git_ref, workflow_id.as_deref()),
                     _ => Err(AccountError::Msg("Unsupported provider.".into())),
                 })
                 .await
@@ -1146,8 +1312,8 @@ pub fn pr_target(app: AppHandle, repo_path: String) -> Result<PrTarget> {
     remotes.sort_by_key(|(n, _)| if n == "origin" { 0 } else { 1 });
     for (_, url) in &remotes {
         if let Some((host, path)) = parse_remote(url) {
-            if let Some(conn) = cfg.connections.iter().find(|c| conn_web_host(c) == host) {
-                return Ok(PrTarget { provider: conn.provider.clone(), host, repo: path });
+            if let Some((conn, repo_id)) = match_conn(&cfg, &host, &path) {
+                return Ok(PrTarget { provider: conn.provider.clone(), host, repo: repo_id });
             }
         }
     }
@@ -1170,12 +1336,13 @@ pub async fn create_pull_request(
     remotes.sort_by_key(|(n, _)| if n == "origin" { 0 } else { 1 });
     for (_, url) in &remotes {
         if let Some((host, path)) = parse_remote(url) {
-            if let Some(conn) = cfg.connections.iter().find(|c| conn_web_host(c) == host) {
+            if let Some((conn, repo_id)) = match_conn(&cfg, &host, &path) {
                 let token = read_token(&conn.id)?;
                 let (provider, base) = (conn.provider.clone(), conn.base_url.clone());
                 return tauri::async_runtime::spawn_blocking(move || match provider.as_str() {
-                    "github" => github_create_pr(&base, &token, &path, &source_branch, &target_branch, &title, &body, draft),
-                    "gitlab" => gitlab_create_mr(&base, &token, &path, &source_branch, &target_branch, &title, &body, draft),
+                    "github" => github_create_pr(&base, &token, &repo_id, &source_branch, &target_branch, &title, &body, draft),
+                    "gitlab" => gitlab_create_mr(&base, &token, &repo_id, &source_branch, &target_branch, &title, &body, draft),
+                    "azure" => azure_create_pr(&base, &token, &repo_id, &source_branch, &target_branch, &title, &body, draft),
                     _ => Err(AccountError::Msg("Unsupported provider.".into())),
                 })
                 .await
@@ -1445,6 +1612,8 @@ pub async fn list_account_repos(app: AppHandle, connection_id: String) -> Result
     tauri::async_runtime::spawn_blocking(move || match conn.provider.as_str() {
         "github" => github_repos(&conn.base_url, &token),
         "gitlab" => gitlab_repos(&conn.base_url, &token),
+        "azure" => azure_repos(&conn.base_url, &token),
+        "beanstalk" => beanstalk_repos(&conn.base_url, &conn.username, &token),
         _ => Ok(Vec::new()),
     })
     .await
@@ -1470,6 +1639,8 @@ pub async fn create_remote_repo(
     tauri::async_runtime::spawn_blocking(move || match conn.provider.as_str() {
         "github" => github_create(&conn.base_url, &token, &name, private),
         "gitlab" => gitlab_create(&conn.base_url, &token, &name, private),
+        "azure" => azure_create(&conn.base_url, &token, &name, private),
+        "beanstalk" => beanstalk_create(&conn.base_url, &conn.username, &token, &name, private),
         _ => Err(AccountError::Msg("Unsupported provider.".into())),
     })
     .await
@@ -1569,6 +1740,471 @@ fn gitlab_repos(base: &str, token: &str) -> Result<Vec<RepoRef>> {
         }
     }
     Ok(out)
+}
+
+/* ── Azure DevOps ─────────────────────────────────────────────────────
+   Auth is a PAT sent as HTTP Basic (empty username). Repos live under
+   {org}/{project}/_git/{repo}; the org is baked into the connection base URL,
+   so these helpers receive "project/repo". Pipelines map onto the Build API. */
+
+fn azure_get(url: &str, token: &str) -> Option<serde_json::Value> {
+    ureq::get(url)
+        .set("authorization", &azure_basic(token))
+        .set("accept", "application/json")
+        .timeout(Duration::from_secs(20))
+        .call()
+        .ok()
+        .and_then(|r| r.into_json().ok())
+}
+
+fn azure_split(project_repo: &str) -> Result<(&str, &str)> {
+    project_repo
+        .split_once('/')
+        .ok_or_else(|| AccountError::Msg("Expected an Azure DevOps project/repo.".into()))
+}
+
+fn strip_ref(r: &str) -> String {
+    r.trim_start_matches("refs/heads/").to_string()
+}
+
+/// Roll an Azure build's (status, result) to a badge word.
+fn azure_build_status(status: &str, result: &str) -> String {
+    if status != "completed" {
+        return "pending".into();
+    }
+    match result {
+        "succeeded" | "partiallySucceeded" => "success".into(),
+        _ => "failure".into(),
+    }
+}
+
+/// Top-level pipeline status for the detail view.
+fn azure_run_status(status: &str, result: &str) -> String {
+    match status {
+        "completed" => match result {
+            "succeeded" | "partiallySucceeded" => "success",
+            "canceled" => "canceled",
+            "failed" => "failed",
+            _ => "other",
+        },
+        "inProgress" | "cancelling" => "running",
+        _ => "pending",
+    }
+    .into()
+}
+
+/// Per-job status for a timeline record.
+fn azure_job_state(state: &str, result: &str) -> String {
+    if state != "completed" {
+        return if state == "inProgress" { "running" } else { "pending" }.into();
+    }
+    match result {
+        "succeeded" | "partiallySucceeded" => "success",
+        "failed" => "failed",
+        "canceled" | "abandoned" => "canceled",
+        "skipped" => "skipped",
+        _ => "other",
+    }
+    .into()
+}
+
+fn azure_prs(base: &str, token: &str, project_repo: &str) -> Result<Vec<PullRequest>> {
+    let (project, repo) = azure_split(project_repo)?;
+    let root = base.trim_end_matches('/');
+    let url = format!(
+        "{root}/{}/_apis/git/repositories/{}/pullrequests?searchCriteria.status=active&$top=50&api-version=7.1",
+        urlencode(project),
+        urlencode(repo)
+    );
+    let json: serde_json::Value = ureq::get(&url)
+        .set("authorization", &azure_basic(token))
+        .set("accept", "application/json")
+        .timeout(Duration::from_secs(20))
+        .call()
+        .map_err(|e| http_err("Couldn't load pull requests", e))?
+        .into_json()?;
+    Ok(json["value"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .map(|p| {
+                    let id = p["pullRequestId"].as_u64().unwrap_or(0);
+                    PullRequest {
+                        number: id,
+                        title: p["title"].as_str().unwrap_or("").to_string(),
+                        author: p["createdBy"]["displayName"].as_str().unwrap_or("").to_string(),
+                        author_avatar: p["createdBy"]["imageUrl"].as_str().unwrap_or("").to_string(),
+                        draft: p["isDraft"].as_bool().unwrap_or(false),
+                        source_branch: strip_ref(p["sourceRefName"].as_str().unwrap_or("")),
+                        target_branch: strip_ref(p["targetRefName"].as_str().unwrap_or("")),
+                        url: format!("{root}/{}/_git/{}/pullrequest/{id}", urlencode(project), urlencode(repo)),
+                        updated_at: p["creationDate"].as_str().unwrap_or("").to_string(),
+                        provider: "azure".to_string(),
+                        assignees: Vec::new(),
+                        reviewers: p["reviewers"]
+                            .as_array()
+                            .map(|a| a.iter().filter_map(|r| r["displayName"].as_str().map(String::from)).collect())
+                            .unwrap_or_default(),
+                        ci_status: String::new(),
+                        head_sha: p["lastMergeSourceCommit"]["commitId"].as_str().unwrap_or("").to_string(),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn azure_create_pr(
+    base: &str, token: &str, project_repo: &str,
+    source: &str, target: &str, title: &str, body: &str, draft: bool,
+) -> Result<CreatedPr> {
+    let (project, repo) = azure_split(project_repo)?;
+    let root = base.trim_end_matches('/');
+    let url = format!(
+        "{root}/{}/_apis/git/repositories/{}/pullrequests?api-version=7.1",
+        urlencode(project),
+        urlencode(repo)
+    );
+    let json: serde_json::Value = ureq::post(&url)
+        .set("authorization", &azure_basic(token))
+        .set("accept", "application/json")
+        .timeout(Duration::from_secs(20))
+        .send_json(serde_json::json!({
+            "sourceRefName": format!("refs/heads/{source}"),
+            "targetRefName": format!("refs/heads/{target}"),
+            "title": title, "description": body, "isDraft": draft
+        }))
+        .map_err(|e| http_err("Couldn't create pull request", e))?
+        .into_json()?;
+    let id = json["pullRequestId"].as_u64().unwrap_or(0);
+    Ok(CreatedPr {
+        url: format!("{root}/{}/_git/{}/pullrequest/{id}", urlencode(project), urlencode(repo)),
+        number: id,
+        provider: "azure".into(),
+    })
+}
+
+fn azure_repos(base: &str, token: &str) -> Result<Vec<RepoRef>> {
+    let url = format!("{}/_apis/git/repositories?api-version=7.1", base.trim_end_matches('/'));
+    let json: serde_json::Value = ureq::get(&url)
+        .set("authorization", &azure_basic(token))
+        .set("accept", "application/json")
+        .timeout(Duration::from_secs(20))
+        .call()
+        .map_err(|e| http_err("Couldn't list repositories", e))?
+        .into_json()?;
+    Ok(json["value"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .map(|r| {
+                    let project = r["project"]["name"].as_str().unwrap_or("");
+                    let name = r["name"].as_str().unwrap_or("");
+                    RepoRef {
+                        name: format!("{project}/{name}"),
+                        ssh_url: r["sshUrl"].as_str().unwrap_or("").to_string(),
+                        http_url: r["remoteUrl"].as_str().unwrap_or("").to_string(),
+                        description: String::new(),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+fn azure_create(base: &str, token: &str, name: &str, private: bool) -> Result<RepoRef> {
+    // Azure repo visibility follows its project; `private` isn't a repo-level knob.
+    let _ = private;
+    let (project, repo) = name
+        .split_once('/')
+        .ok_or_else(|| AccountError::Msg("Name a new Azure repo as project/repo.".into()))?;
+    let root = base.trim_end_matches('/');
+    let proj: serde_json::Value = ureq::get(&format!("{root}/_apis/projects/{}?api-version=7.1", urlencode(project)))
+        .set("authorization", &azure_basic(token))
+        .set("accept", "application/json")
+        .timeout(Duration::from_secs(20))
+        .call()
+        .map_err(|e| http_err("Project not found", e))?
+        .into_json()?;
+    let pid = proj["id"].as_str().unwrap_or("");
+    let json: serde_json::Value = ureq::post(&format!("{root}/_apis/git/repositories?api-version=7.1"))
+        .set("authorization", &azure_basic(token))
+        .set("accept", "application/json")
+        .timeout(Duration::from_secs(20))
+        .send_json(serde_json::json!({ "name": repo, "project": { "id": pid } }))
+        .map_err(|e| http_err("Couldn't create repository", e))?
+        .into_json()?;
+    Ok(RepoRef {
+        name: format!("{project}/{}", json["name"].as_str().unwrap_or(repo)),
+        ssh_url: json["sshUrl"].as_str().unwrap_or("").to_string(),
+        http_url: json["remoteUrl"].as_str().unwrap_or("").to_string(),
+        description: String::new(),
+    })
+}
+
+fn azure_ci_map(base: &str, token: &str, project_repo: &str) -> Vec<CiStatus> {
+    let (project, repo) = match project_repo.split_once('/') {
+        Some(x) => x,
+        None => return Vec::new(),
+    };
+    let url = format!(
+        "{}/{}/_apis/build/builds?$top=100&queryOrder=finishTimeDescending&api-version=7.1",
+        base.trim_end_matches('/'),
+        urlencode(project)
+    );
+    let json = match azure_get(&url, token) {
+        Some(j) => j,
+        None => return Vec::new(),
+    };
+    let mut seen: HashMap<String, ()> = HashMap::new();
+    let mut out = Vec::new();
+    if let Some(arr) = json["value"].as_array() {
+        for b in arr {
+            if let Some(rn) = b["repository"]["name"].as_str() {
+                if !rn.is_empty() && !rn.eq_ignore_ascii_case(repo) {
+                    continue;
+                }
+            }
+            let sha = b["sourceVersion"].as_str().unwrap_or("");
+            if sha.is_empty() || seen.insert(sha.to_string(), ()).is_some() {
+                continue;
+            }
+            out.push(CiStatus {
+                sha: sha.to_string(),
+                status: azure_build_status(b["status"].as_str().unwrap_or(""), b["result"].as_str().unwrap_or("")),
+            });
+        }
+    }
+    out
+}
+
+fn azure_pipeline_detail(base: &str, token: &str, project_repo: &str, sha: &str) -> Vec<PipelineDetail> {
+    let (project, repo) = match project_repo.split_once('/') {
+        Some(x) => x,
+        None => return Vec::new(),
+    };
+    let root = base.trim_end_matches('/');
+    let url = format!(
+        "{root}/{}/_apis/build/builds?$top=50&queryOrder=finishTimeDescending&api-version=7.1",
+        urlencode(project)
+    );
+    let json = match azure_get(&url, token) {
+        Some(j) => j,
+        None => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    if let Some(arr) = json["value"].as_array() {
+        for b in arr {
+            if b["sourceVersion"].as_str().unwrap_or("") != sha {
+                continue;
+            }
+            if let Some(rn) = b["repository"]["name"].as_str() {
+                if !rn.is_empty() && !rn.eq_ignore_ascii_case(repo) {
+                    continue;
+                }
+            }
+            let build_id = b["id"].as_u64().unwrap_or(0);
+            let web = b["_links"]["web"]["href"].as_str().unwrap_or("").to_string();
+            let tl = azure_get(
+                &format!("{root}/{}/_apis/build/builds/{build_id}/timeline?api-version=7.1", urlencode(project)),
+                token,
+            );
+            let jobs = tl
+                .as_ref()
+                .and_then(|t| t["records"].as_array())
+                .map(|recs| {
+                    recs.iter()
+                        .filter(|r| r["type"].as_str() == Some("Job"))
+                        .map(|r| {
+                            let jid = match r["log"]["id"].as_u64() {
+                                Some(l) => format!("{build_id}:{l}"),
+                                None => r["id"].as_str().unwrap_or("").to_string(),
+                            };
+                            PipelineJob {
+                                id: jid,
+                                name: r["name"].as_str().unwrap_or("").to_string(),
+                                stage: String::new(),
+                                status: azure_job_state(r["state"].as_str().unwrap_or(""), r["result"].as_str().unwrap_or("")),
+                                web_url: web.clone(),
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            out.push(PipelineDetail {
+                id: build_id.to_string(),
+                name: b["definition"]["name"].as_str().unwrap_or("").to_string(),
+                status: azure_run_status(b["status"].as_str().unwrap_or(""), b["result"].as_str().unwrap_or("")),
+                web_url: web,
+                jobs,
+            });
+        }
+    }
+    out
+}
+
+fn azure_job_log(base: &str, token: &str, project_repo: &str, job_id: &str) -> Result<String> {
+    let (project, _repo) = azure_split(project_repo)?;
+    let (build_id, log_id) = job_id
+        .split_once(':')
+        .ok_or_else(|| AccountError::Msg("No log is available for this job yet.".into()))?;
+    let url = format!(
+        "{}/{}/_apis/build/builds/{build_id}/logs/{log_id}?api-version=7.1",
+        base.trim_end_matches('/'),
+        urlencode(project)
+    );
+    let text = ureq::get(&url)
+        .set("authorization", &azure_basic(token))
+        .timeout(Duration::from_secs(25))
+        .call()
+        .map_err(|e| http_err("Couldn't fetch the log", e))?
+        .into_string()
+        .map_err(|e| AccountError::Msg(e.to_string()))?;
+    const MAX: usize = 200_000;
+    Ok(if text.len() > MAX {
+        format!("… (log truncated; showing last {MAX} chars) …\n{}", &text[text.len() - MAX..])
+    } else {
+        text
+    })
+}
+
+fn azure_pipeline_action(base: &str, token: &str, project_repo: &str, build_id: &str, verb: &str) -> Result<()> {
+    let (project, _repo) = azure_split(project_repo)?;
+    let root = base.trim_end_matches('/');
+    if verb == "cancel" {
+        ureq::request("PATCH", &format!("{root}/{}/_apis/build/builds/{build_id}?api-version=7.1", urlencode(project)))
+            .set("authorization", &azure_basic(token))
+            .set("accept", "application/json")
+            .timeout(Duration::from_secs(20))
+            .send_json(serde_json::json!({ "status": "cancelling" }))
+            .map_err(|e| http_err("Couldn't cancel the pipeline", e))?;
+        return Ok(());
+    }
+    // Retry = queue a fresh build from the same definition and branch.
+    let b = azure_get(
+        &format!("{root}/{}/_apis/build/builds/{build_id}?api-version=7.1", urlencode(project)),
+        token,
+    )
+    .ok_or_else(|| AccountError::Msg("Build not found.".into()))?;
+    let did = b["definition"]["id"].as_u64().ok_or_else(|| AccountError::Msg("No pipeline definition for this build.".into()))?;
+    let branch = b["sourceBranch"].as_str().unwrap_or("refs/heads/main").to_string();
+    ureq::post(&format!("{root}/{}/_apis/build/builds?api-version=7.1", urlencode(project)))
+        .set("authorization", &azure_basic(token))
+        .set("accept", "application/json")
+        .timeout(Duration::from_secs(20))
+        .send_json(serde_json::json!({ "definition": { "id": did }, "sourceBranch": branch }))
+        .map_err(|e| http_err("Couldn't retry the pipeline", e))?;
+    Ok(())
+}
+
+fn azure_definitions(base: &str, token: &str, project_repo: &str) -> Result<Vec<WorkflowRef>> {
+    let (project, _repo) = azure_split(project_repo)?;
+    let url = format!(
+        "{}/{}/_apis/build/definitions?$top=100&api-version=7.1",
+        base.trim_end_matches('/'),
+        urlencode(project)
+    );
+    let json: serde_json::Value = ureq::get(&url)
+        .set("authorization", &azure_basic(token))
+        .set("accept", "application/json")
+        .timeout(Duration::from_secs(20))
+        .call()
+        .map_err(|e| http_err("Couldn't list pipelines", e))?
+        .into_json()?;
+    Ok(json["value"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|d| WorkflowRef {
+                    id: d["id"].as_u64().map(|n| n.to_string()).unwrap_or_default(),
+                    name: d["name"].as_str().unwrap_or("").to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+fn azure_trigger(base: &str, token: &str, project_repo: &str, git_ref: &str, definition_id: Option<&str>) -> Result<String> {
+    let (project, _repo) = azure_split(project_repo)?;
+    let did: u64 = definition_id
+        .ok_or_else(|| AccountError::Msg("Pick a pipeline to run.".into()))?
+        .parse()
+        .map_err(|_| AccountError::Msg("Bad pipeline id.".into()))?;
+    let url = format!("{}/{}/_apis/build/builds?api-version=7.1", base.trim_end_matches('/'), urlencode(project));
+    ureq::post(&url)
+        .set("authorization", &azure_basic(token))
+        .set("accept", "application/json")
+        .timeout(Duration::from_secs(20))
+        .send_json(serde_json::json!({ "definition": { "id": did }, "sourceBranch": format!("refs/heads/{git_ref}") }))
+        .map_err(|e| http_err("Couldn't queue the pipeline", e))?;
+    Ok(format!("Pipeline queued on {git_ref}"))
+}
+
+/* ── Beanstalk ────────────────────────────────────────────────────────
+   Basic auth (username + password or access token). Beanstalk's API has no
+   pull-request or CI/pipeline surface, so parity here is connect + repos;
+   the PR/CI commands simply don't match a Beanstalk remote. */
+
+/// The account subdomain of a Beanstalk base URL ({account}.beanstalkapp.com).
+fn beanstalk_account(base: &str) -> String {
+    base.trim_end_matches('/')
+        .split("://")
+        .last()
+        .unwrap_or("")
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .strip_suffix(".beanstalkapp.com")
+        .unwrap_or("")
+        .to_string()
+}
+
+fn beanstalk_repos(base: &str, user: &str, token: &str) -> Result<Vec<RepoRef>> {
+    let account = beanstalk_account(base);
+    let url = format!("{}/api/repositories.json", base.trim_end_matches('/'));
+    let arr: Vec<serde_json::Value> = ureq::get(&url)
+        .set("authorization", &basic_auth(user, token))
+        .set("accept", "application/json")
+        .timeout(Duration::from_secs(20))
+        .call()
+        .map_err(|e| http_err("Couldn't list repositories", e))?
+        .into_json()?;
+    Ok(arr
+        .iter()
+        .map(|w| &w["repository"])
+        .filter(|r| r["vcs"].as_str().unwrap_or("git") == "git")
+        .map(|r| {
+            let name = r["name"].as_str().unwrap_or("");
+            RepoRef {
+                name: r["title"].as_str().filter(|s| !s.is_empty()).unwrap_or(name).to_string(),
+                ssh_url: format!("git@{account}.git.beanstalkapp.com:/{account}/{name}.git"),
+                http_url: format!("https://{account}.git.beanstalkapp.com/{name}.git"),
+                description: String::new(),
+            }
+        })
+        .collect())
+}
+
+fn beanstalk_create(base: &str, user: &str, token: &str, name: &str, private: bool) -> Result<RepoRef> {
+    let _ = private; // Beanstalk has no simple per-repo visibility flag.
+    let account = beanstalk_account(base);
+    let url = format!("{}/api/repositories.json", base.trim_end_matches('/'));
+    let json: serde_json::Value = ureq::post(&url)
+        .set("authorization", &basic_auth(user, token))
+        .set("accept", "application/json")
+        .timeout(Duration::from_secs(20))
+        .send_json(serde_json::json!({ "repository": { "name": name, "title": name, "type_id": "git" } }))
+        .map_err(|e| http_err("Couldn't create repository", e))?
+        .into_json()?;
+    let r = &json["repository"];
+    let slug = r["name"].as_str().unwrap_or(name);
+    Ok(RepoRef {
+        name: r["title"].as_str().filter(|s| !s.is_empty()).unwrap_or(slug).to_string(),
+        ssh_url: format!("git@{account}.git.beanstalkapp.com:/{account}/{slug}.git"),
+        http_url: format!("https://{account}.git.beanstalkapp.com/{slug}.git"),
+        description: String::new(),
+    })
 }
 
 pub(crate) fn http_err(context: &str, e: ureq::Error) -> AccountError {
