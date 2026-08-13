@@ -25,7 +25,7 @@ import {
   setDiffSplit,
   type SettingsSection,
 } from "../lib/ui";
-import { BUILTIN_THEMES, type Theme, type TokenKey } from "../lib/themes";
+import { BUILTIN_THEMES, MODERNIST_BASE, type Theme, type TokenKey } from "../lib/themes";
 import AiProvidersPanel from "./AiProvidersPanel.vue";
 import ConnectionsPanel from "./ConnectionsPanel.vue";
 import PlumbMark from "./PlumbMark.vue";
@@ -52,10 +52,11 @@ const builtinGroups = computed(() => {
 // The custom theme currently applied (if any), for the editor.
 const activeCustom = computed(() => customThemesStore.themes.find((t) => t.id === appState.themeId) ?? null);
 
-// A small swatch preview from a theme's key colors (falls back to CSS vars for
-// the Modernist themes, whose values aren't in the map).
+// A small swatch preview from a theme's key colors. Modernist themes (and gaps
+// in partial custom themes) resolve to the Modernist base for their mode, so a
+// tile shows the theme's OWN colors rather than the currently-applied theme's.
 function swatch(t: Theme, key: TokenKey, fallback: string) {
-  return t.vars[key] ?? fallback;
+  return t.vars[key] ?? MODERNIST_BASE[t.mode][key] ?? fallback;
 }
 
 // The colors exposed in the custom editor.
