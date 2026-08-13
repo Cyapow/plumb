@@ -819,11 +819,49 @@ pub async fn stash_save(path: String, message: Option<String>) -> Result<()> {
     .await
 }
 
+/// Stash with options: include untracked files, and/or keep the index staged.
+#[tauri::command]
+pub async fn stash_save_ex(path: String, message: Option<String>, include_untracked: bool, keep_index: bool) -> Result<()> {
+    spawn(move || {
+        let mut repo = open(&path)?;
+        let sig = repo.signature()?;
+        let mut flags = git2::StashFlags::DEFAULT;
+        if include_untracked {
+            flags |= git2::StashFlags::INCLUDE_UNTRACKED;
+        }
+        if keep_index {
+            flags |= git2::StashFlags::KEEP_INDEX;
+        }
+        repo.stash_save(&sig, &message.unwrap_or_default(), Some(flags))?;
+        Ok(())
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn stash_apply(path: String, index: usize) -> Result<()> {
     spawn(move || {
         let mut repo = open(&path)?;
         repo.stash_apply(index, None)?;
+        Ok(())
+    })
+    .await
+}
+
+/// Apply (or pop) a stash, optionally restoring the staged state.
+#[tauri::command]
+pub async fn stash_apply_ex(path: String, index: usize, pop: bool, restore_index: bool) -> Result<()> {
+    spawn(move || {
+        let mut repo = open(&path)?;
+        let mut opts = git2::StashApplyOptions::new();
+        if restore_index {
+            opts.reinstantiate_index();
+        }
+        if pop {
+            repo.stash_pop(index, Some(&mut opts))?;
+        } else {
+            repo.stash_apply(index, Some(&mut opts))?;
+        }
         Ok(())
     })
     .await
@@ -1001,9 +1039,62 @@ pub async fn merge_branch(path: String, name: String) -> Result<String> {
     spawn(move || run_merge_like(&path, &["merge", "--no-edit", &name])).await
 }
 
+/// Merge with explicit options (Tower-style dialog).
+#[tauri::command]
+pub async fn merge_branch_ex(
+    path: String,
+    name: String,
+    squash: bool,
+    no_ff: bool,
+    no_commit: bool,
+    verify_signatures: bool,
+    no_verify: bool,
+) -> Result<String> {
+    spawn(move || {
+        let mut args: Vec<String> = vec!["merge".into(), "--no-edit".into()];
+        if squash {
+            args.push("--squash".into());
+        }
+        if no_ff {
+            args.push("--no-ff".into());
+        }
+        if no_commit {
+            args.push("--no-commit".into());
+        }
+        if verify_signatures {
+            args.push("--verify-signatures".into());
+        }
+        if no_verify {
+            args.push("--no-verify".into());
+        }
+        args.push(name);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_merge_like(&path, &refs)
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn rebase_branch(path: String, onto: String) -> Result<String> {
     spawn(move || run_merge_like(&path, &["rebase", &onto])).await
+}
+
+/// Rebase with explicit options.
+#[tauri::command]
+pub async fn rebase_branch_ex(path: String, onto: String, autostash: bool, no_verify: bool) -> Result<String> {
+    spawn(move || {
+        let mut args: Vec<String> = vec!["rebase".into()];
+        if autostash {
+            args.push("--autostash".into());
+        }
+        if no_verify {
+            args.push("--no-verify".into());
+        }
+        args.push(onto);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_merge_like(&path, &refs)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1596,6 +1687,80 @@ pub fn open_in_editor(path: String) -> Result<()> {
     Ok(())
 }
 
+/// Read the given git-config keys (repo-effective: local over global). Missing
+/// keys are simply absent from the map.
+#[tauri::command]
+pub fn get_config(path: String, keys: Vec<String>) -> Result<HashMap<String, String>> {
+    let repo = open(&path)?;
+    let cfg = repo.config()?;
+    let mut out = HashMap::new();
+    for k in keys {
+        if let Ok(v) = cfg.get_string(&k) {
+            out.insert(k, v);
+        } else if let Ok(b) = cfg.get_bool(&k) {
+            out.insert(k, b.to_string());
+        }
+    }
+    Ok(out)
+}
+
+/// Set a git-config key, in this repo's config or globally.
+#[tauri::command]
+pub fn set_config(path: String, key: String, value: String, global: bool) -> Result<()> {
+    let mut cfg = if global {
+        git2::Config::open_default()?
+    } else {
+        open(&path)?.config()?
+    };
+    cfg.set_str(&key, &value)?;
+    Ok(())
+}
+
+/// Remove a git-config key (ignored if it doesn't exist).
+#[tauri::command]
+pub fn unset_config(path: String, key: String, global: bool) -> Result<()> {
+    let mut cfg = if global {
+        git2::Config::open_default()?
+    } else {
+        open(&path)?.config()?
+    };
+    let _ = cfg.remove(&key);
+    Ok(())
+}
+
+/// The repo's .git/description text.
+#[tauri::command]
+pub fn get_repo_description(path: String) -> Result<String> {
+    let repo = open(&path)?;
+    let p = repo.path().join("description");
+    Ok(std::fs::read_to_string(p).unwrap_or_default().trim_end().to_string())
+}
+
+#[tauri::command]
+pub fn set_repo_description(path: String, text: String) -> Result<()> {
+    let repo = open(&path)?;
+    let p = repo.path().join("description");
+    std::fs::write(p, format!("{}\n", text.trim_end())).map_err(|e| GitError::Message(format!("Couldn't write description: {e}")))?;
+    Ok(())
+}
+
+/// Read the whole .gitignore (empty string if none).
+#[tauri::command]
+pub fn get_gitignore(path: String) -> Result<String> {
+    let repo = open(&path)?;
+    let root = repo.workdir().ok_or_else(|| GitError::Message("No working directory.".into()))?;
+    Ok(std::fs::read_to_string(root.join(".gitignore")).unwrap_or_default())
+}
+
+/// Overwrite .gitignore with `text`.
+#[tauri::command]
+pub fn set_gitignore(path: String, text: String) -> Result<()> {
+    let repo = open(&path)?;
+    let root = repo.workdir().ok_or_else(|| GitError::Message("No working directory.".into()))?;
+    std::fs::write(root.join(".gitignore"), text).map_err(|e| GitError::Message(format!("Couldn't write .gitignore: {e}")))?;
+    Ok(())
+}
+
 /// Append a pattern to the repo's .gitignore (deduplicated).
 #[tauri::command]
 pub fn add_to_gitignore(path: String, pattern: String) -> Result<()> {
@@ -2174,6 +2339,160 @@ pub async fn rebase_interactive(
         } else {
             stderr.trim().to_string()
         }))
+    })
+    .await
+}
+
+/* ── Git Flow (native; stored in standard gitflow.* config keys) ──── */
+
+#[derive(Serialize)]
+pub struct FlowConfig {
+    pub initialized: bool,
+    /// "" | gitflow | custom | github | gitlab | trunk
+    pub workflow: String,
+    pub main: String,
+    pub develop: String,
+    pub feature: String,
+    pub release: String,
+    pub hotfix: String,
+    pub versiontag: String,
+    /// GitLab Flow environment branches, in promotion order.
+    pub environments: Vec<String>,
+}
+
+fn cfg_or(cfg: &git2::Config, key: &str, default: &str) -> String {
+    cfg.get_string(key).ok().filter(|s| !s.is_empty()).unwrap_or_else(|| default.to_string())
+}
+
+#[tauri::command]
+pub fn flow_config(path: String) -> Result<FlowConfig> {
+    let repo = open(&path)?;
+    let cfg = repo.config()?;
+    let initialized = cfg.get_string("gitflow.branch.master").is_ok() && cfg.get_string("gitflow.branch.develop").is_ok();
+    let environments = cfg_or(&cfg, "plumb.workflow.environments", "")
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    Ok(FlowConfig {
+        initialized,
+        workflow: cfg_or(&cfg, "plumb.workflow.type", ""),
+        main: cfg_or(&cfg, "gitflow.branch.master", "main"),
+        develop: cfg_or(&cfg, "gitflow.branch.develop", "develop"),
+        feature: cfg_or(&cfg, "gitflow.prefix.feature", "feature/"),
+        release: cfg_or(&cfg, "gitflow.prefix.release", "release/"),
+        hotfix: cfg_or(&cfg, "gitflow.prefix.hotfix", "hotfix/"),
+        versiontag: cfg_or(&cfg, "gitflow.prefix.versiontag", "v"),
+        environments,
+    })
+}
+
+/// Record which workflow this repo uses.
+#[tauri::command]
+pub fn flow_set_type(path: String, workflow: String) -> Result<()> {
+    let repo = open(&path)?;
+    repo.config()?.set_str("plumb.workflow.type", &workflow)?;
+    Ok(())
+}
+
+/// Set the GitLab Flow environment branches (comma-separated, promotion order).
+#[tauri::command]
+pub fn flow_set_environments(path: String, csv: String) -> Result<()> {
+    let repo = open(&path)?;
+    repo.config()?.set_str("plumb.workflow.environments", &csv)?;
+    Ok(())
+}
+
+/// Merge `source` into `target` (checking `target` out first), optionally
+/// deleting `source`. Powers GitHub/Trunk finish and GitLab Flow promotions.
+#[tauri::command]
+pub async fn merge_into(path: String, source: String, target: String, delete_source: bool) -> Result<String> {
+    spawn(move || {
+        run_git(&path, &["checkout", &target])?;
+        let out = run_merge_like(&path, &["merge", "--no-ff", "--no-edit", &source])?;
+        if delete_source {
+            let _ = run_git(&path, &["branch", "-d", &source]);
+        }
+        Ok(if out.is_empty() { format!("Merged {source} into {target}") } else { out })
+    })
+    .await
+}
+
+/// Initialise Git Flow: record the branch/prefix config and ensure `develop`
+/// exists (branched from `main`).
+#[tauri::command]
+pub async fn flow_init(path: String, main: String, develop: String, versiontag: String) -> Result<String> {
+    spawn(move || {
+        {
+            let repo = open(&path)?;
+            let mut cfg = repo.config()?;
+            cfg.set_str("gitflow.branch.master", &main)?;
+            cfg.set_str("gitflow.branch.develop", &develop)?;
+            cfg.set_str("gitflow.prefix.feature", "feature/")?;
+            cfg.set_str("gitflow.prefix.release", "release/")?;
+            cfg.set_str("gitflow.prefix.hotfix", "hotfix/")?;
+            cfg.set_str("gitflow.prefix.bugfix", "bugfix/")?;
+            cfg.set_str("gitflow.prefix.support", "support/")?;
+            cfg.set_str("gitflow.prefix.versiontag", &versiontag)?;
+        }
+        // Create develop from main if it doesn't exist yet.
+        let repo = open(&path)?;
+        if repo.find_branch(&develop, BranchType::Local).is_err() {
+            run_git(&path, &["branch", &develop, &main])?;
+        }
+        Ok("Git Flow initialised".into())
+    })
+    .await
+}
+
+/// Start a flow branch. `kind` = feature | release | hotfix | bugfix.
+#[tauri::command]
+pub async fn flow_start(path: String, kind: String, name: String) -> Result<String> {
+    spawn(move || {
+        let repo = open(&path)?;
+        let cfg = repo.config()?;
+        let develop = cfg_or(&cfg, "gitflow.branch.develop", "develop");
+        let main = cfg_or(&cfg, "gitflow.branch.master", "main");
+        let prefix = cfg_or(&cfg, &format!("gitflow.prefix.{kind}"), &format!("{kind}/"));
+        // Hotfixes branch from main/production; everything else from develop.
+        let base = if kind == "hotfix" { &main } else { &develop };
+        let branch = format!("{prefix}{name}");
+        run_git(&path, &["checkout", "-b", &branch, base])?;
+        Ok(format!("Started {branch}"))
+    })
+    .await
+}
+
+/// Finish a flow branch: merge back (and tag + back-merge for release/hotfix),
+/// then delete it. Best-effort — a merge conflict leaves the repo mid-merge for
+/// you to resolve, like git-flow itself.
+#[tauri::command]
+pub async fn flow_finish(path: String, kind: String, name: String, version: Option<String>) -> Result<String> {
+    spawn(move || {
+        let repo = open(&path)?;
+        let cfg = repo.config()?;
+        let develop = cfg_or(&cfg, "gitflow.branch.develop", "develop");
+        let main = cfg_or(&cfg, "gitflow.branch.master", "main");
+        let prefix = cfg_or(&cfg, &format!("gitflow.prefix.{kind}"), &format!("{kind}/"));
+        let versiontag = cfg_or(&cfg, "gitflow.prefix.versiontag", "v");
+        let branch = format!("{prefix}{name}");
+
+        if kind == "feature" || kind == "bugfix" {
+            run_git(&path, &["checkout", &develop])?;
+            run_git(&path, &["merge", "--no-ff", "--no-edit", &branch])?;
+            run_git(&path, &["branch", "-d", &branch])?;
+            Ok(format!("Merged {branch} into {develop}"))
+        } else {
+            // release / hotfix → main (tagged), then back into develop.
+            run_git(&path, &["checkout", &main])?;
+            run_git(&path, &["merge", "--no-ff", "--no-edit", &branch])?;
+            let tag = format!("{versiontag}{}", version.unwrap_or_else(|| name.clone()));
+            run_git(&path, &["tag", "-a", &tag, "-m", &tag])?;
+            run_git(&path, &["checkout", &develop])?;
+            run_git(&path, &["merge", "--no-ff", "--no-edit", &branch])?;
+            run_git(&path, &["branch", "-d", &branch])?;
+            Ok(format!("Released {tag}"))
+        }
     })
     .await
 }

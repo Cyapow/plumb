@@ -108,7 +108,7 @@ function pickedInHunk(hi: number): number[] {
     <div v-else-if="binary" class="empty">Binary file — no textual diff.</div>
     <div v-else-if="hunks.length === 0" class="empty">{{ emptyText ?? "No changes to show." }}</div>
     <!-- Unified -->
-    <div v-else-if="!split" class="hunks mono">
+    <div v-else-if="!split" class="hunks hunks-unified mono">
       <template v-for="(h, hi) in hunks" :key="hi">
         <div class="hunk-head">
           <span class="hh-text">{{ h.header }}</span>
@@ -169,6 +169,10 @@ function pickedInHunk(hi: number): number[] {
 .diff { height: 100%; overflow: auto; background: var(--bg); }
 .empty { padding: var(--space-6); color: var(--text-faint); font-size: 12.5px; }
 .hunks { font-family: var(--code-font); font-size: var(--code-font-size); line-height: var(--code-line-h); }
+/* Size to the widest line so row backgrounds and the hunk bar span the full
+   horizontal scroll width, not just the viewport. min-width keeps it full-bleed
+   when the content is narrower than the pane. */
+.hunks-unified { width: max-content; min-width: 100%; }
 .hunk-head {
   display: flex; align-items: center; gap: var(--space-3);
   padding: 0 var(--space-2) 0 var(--space-4);
