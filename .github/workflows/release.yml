@@ -25,7 +25,11 @@ jobs:
           - platform: macos-latest
             targets: aarch64-apple-darwin,x86_64-apple-darwin
             args: "--target universal-apple-darwin --config '{\"bundle\":{\"macOS\":{\"signingIdentity\":\"-\"}}}'"
+          # Linux x86_64 and arm64 (arm64 for Apple Silicon VMs / arm boards).
           - platform: ubuntu-22.04
+            targets: ""
+            args: "--bundles deb,appimage"
+          - platform: ubuntu-22.04-arm
             targets: ""
             args: "--bundles deb,appimage"
           - platform: windows-latest
@@ -36,7 +40,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Linux system dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: startsWith(matrix.platform, 'ubuntu')
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -73,7 +77,7 @@ jobs:
           tagName: plumb-v__VERSION__
           releaseName: Plumb v__VERSION__
           releaseBody: |
-            Automated build of Plumb v__VERSION__ for **macOS (universal), Windows, and Linux**.
+            Automated build of Plumb v__VERSION__ for **macOS (universal), Windows, and Linux (x86_64 + arm64)**.
 
             These builds are **unsigned / not notarized**, so each OS will warn on first run:
             - **macOS:** System Settings → Privacy & Security → *Open Anyway* (or `xattr -dr com.apple.quarantine /Applications/Plumb.app`).

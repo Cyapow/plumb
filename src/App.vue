@@ -494,9 +494,18 @@ function onScopeChange() {
 
 const laneColor = (i: number) => `var(--lane-${i % 7})`;
 
-// Branch tree (local + remote) + a stable colour per branch.
-const localTree = computed(() => buildBranchTree(localBranches.value));
-const remoteTree = computed(() => buildBranchTree(remoteBranches.value));
+// Sidebar filter — narrows branches, remotes, stashes and tags at once.
+const sideFilter = ref("");
+const sideMatch = (s: string) => s.toLowerCase().includes(sideFilter.value.trim().toLowerCase());
+
+// Branch tree (local + remote) + a stable colour per branch. Filtered by the
+// sidebar query when one is set.
+const fLocalBranches = computed(() => (sideFilter.value ? localBranches.value.filter((b) => sideMatch(b.name)) : localBranches.value));
+const fRemoteBranches = computed(() => (sideFilter.value ? remoteBranches.value.filter((b) => sideMatch(b.name)) : remoteBranches.value));
+const localTree = computed(() => buildBranchTree(fLocalBranches.value));
+const remoteTree = computed(() => buildBranchTree(fRemoteBranches.value));
+const fStashes = computed(() => (sideFilter.value ? stashes.value.filter((s) => sideMatch(s.message)) : stashes.value));
+const fTags = computed(() => (sideFilter.value ? tags.value.filter((t) => sideMatch(t.name)) : tags.value));
 const branchColors = computed(() => {
   const m = new Map<string, string>();
   branches.value.forEach((b, i) => m.set(b.name, laneColor(i)));
@@ -1341,6 +1350,12 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           <div class="repo-path mono">{{ repo.path }}</div>
         </div>
 
+        <div class="side-filter">
+          <span class="sf-ico">⌕</span>
+          <input v-model="sideFilter" placeholder="Filter branches, tags, stashes…" spellcheck="false" />
+          <button v-if="sideFilter" class="sf-x" title="Clear" @click="sideFilter = ''">✕</button>
+        </div>
+
         <nav class="side-section">
           <div class="sect-head" @click="toggleSection('workspace')">
             <span class="sect-chev">{{ collapsedSections.workspace ? "▸" : "▾" }}</span>
@@ -1361,7 +1376,7 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           </template>
         </nav>
 
-        <nav class="side-section" v-if="localBranches.length">
+        <nav class="side-section" v-if="localTree.length">
           <div class="sect-head" @click="toggleSection('branches')">
             <span class="sect-chev">{{ collapsedSections.branches ? "▸" : "▾" }}</span>
             <span class="section-label">Branches</span>
@@ -1369,7 +1384,7 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           <BranchTree v-if="!collapsedSections.branches" :nodes="localTree" />
         </nav>
 
-        <nav class="side-section" v-if="remoteTree.length || remotes.length">
+        <nav class="side-section" v-if="remoteTree.length || (!sideFilter && remotes.length)">
           <div class="sect-head" @click="toggleSection('remotes')">
             <span class="sect-chev">{{ collapsedSections.remotes ? "▸" : "▾" }}</span>
             <span class="section-label">Remotes</span>
@@ -1388,7 +1403,7 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           </template>
         </nav>
 
-        <nav class="side-section">
+        <nav class="side-section" v-if="!sideFilter || fStashes.length">
           <div class="sect-head" @click="toggleSection('stashes')">
             <span class="sect-chev">{{ collapsedSections.stashes ? "▸" : "▾" }}</span>
             <span class="section-label">Stashes</span>
@@ -1396,7 +1411,7 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           </div>
           <template v-if="!collapsedSections.stashes">
             <div
-              v-for="s in stashes"
+              v-for="s in fStashes"
               :key="s.index"
               class="side-row mono muted clickable"
               :title="s.message"
@@ -1405,18 +1420,19 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
             >
               <span class="ellipsis">stash@{{ s.index }}: {{ s.message.replace(/^WIP on /, "") }}</span>
             </div>
-            <div v-if="!stashes.length" class="conn-empty">No stashes.</div>
+            <div v-if="!fStashes.length" class="conn-empty">No stashes.</div>
           </template>
         </nav>
 
-        <nav class="side-section" v-if="tags.length">
+        <nav class="side-section" v-if="fTags.length">
           <div class="sect-head" @click="toggleSection('tags')">
             <span class="sect-chev">{{ collapsedSections.tags ? "▸" : "▾" }}</span>
             <span class="section-label">Tags</span>
+            <span v-if="!sideFilter && tags.length > 12" class="tag-count mono">{{ tags.length }}</span>
           </div>
           <template v-if="!collapsedSections.tags">
             <div
-              v-for="t in tags.slice(0, 12)"
+              v-for="t in (sideFilter ? fTags : fTags.slice(0, 12))"
               :key="t.name"
               class="side-row mono muted clickable"
               @click="scrollToCommit(t.target)"
@@ -1858,6 +1874,13 @@ kbd {
 .rh-btn:hover { color: var(--accent); }
 .repo-title { font-size: 13px; font-weight: 700; }
 .repo-path { font-size: 10.5px; color: var(--text-faint); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-filter { display: flex; align-items: center; gap: 6px; margin: var(--space-2) var(--space-3) 0; padding: 0 8px; height: 28px; background: var(--bg); border: 1px solid var(--line); }
+.side-filter .sf-ico { color: var(--text-faint); font-size: 12px; flex: none; }
+.side-filter input { flex: 1; min-width: 0; height: 100%; background: none; border: none; color: var(--text); font-size: 12px; }
+.side-filter input:focus { outline: none; }
+.side-filter input::placeholder { color: var(--text-faint); }
+.side-filter .sf-x { flex: none; width: 16px; height: 16px; background: var(--raised); border: 1px solid var(--line); color: var(--text-dim); font-size: 9px; cursor: pointer; line-height: 1; }
+.tag-count { margin-left: auto; font-size: 10px; color: var(--text-faint); }
 
 .side-section { padding: var(--space-4) 0 0; }
 .side-section .section-label { padding: 0 var(--space-3) var(--space-2); }
