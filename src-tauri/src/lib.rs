@@ -141,6 +141,38 @@ fn arg_repo_path(args: &[String]) -> Option<String> {
         .map(|p| p.to_string_lossy().to_string())
 }
 
+/// Tray (menu-bar) icon shown in serve mode, with Open / Quit.
+fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    use tauri::menu::{MenuBuilder, MenuItem};
+    use tauri::tray::TrayIconBuilder;
+    use tauri::Manager;
+
+    let open = MenuItem::with_id(app, "tray_open", "Open Plumb Window", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "tray_quit", "Quit Plumb", true, None::<&str>)?;
+    let menu = MenuBuilder::new(app).items(&[&open, &quit]).build()?;
+
+    let mut builder = TrayIconBuilder::new().tooltip("Plumb — serving").menu(&menu).on_menu_event(|app, event| {
+        match event.id().0.as_str() {
+            "tray_quit" => app.exit(0),
+            "tray_open" => {
+                // Promote to a normal windowed app and show the window.
+                #[cfg(target_os = "macos")]
+                let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                }
+            }
+            _ => {}
+        }
+    });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let launched = arg_repo_path(&std::env::args().collect::<Vec<_>>());
@@ -191,11 +223,15 @@ pub fn run() {
             // hidden — an embedded editor webview is the client, not this window.
             if std::env::args().any(|a| a == "serve") {
                 use tauri::Manager;
+                // Menu-bar agent: no dock icon on macOS, just a tray item.
+                #[cfg(target_os = "macos")]
+                let _ = app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
                 let repo = arg_repo_path(&std::env::args().collect::<Vec<_>>());
                 serve::start(app.handle().clone(), repo);
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.hide();
                 }
+                build_tray(app.handle())?;
             }
             Ok(())
         })
