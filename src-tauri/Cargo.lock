@@ -3018,7 +3018,7 @@ dependencies = [
 
 [[package]]
 name = "plumb"
-version = "0.10.13"
+version = "0.10.14"
 dependencies = [
  "base64 0.22.1",
  "core-foundation 0.10.1",
