@@ -144,10 +144,31 @@ async function loadMoreCommits() {
     loadingMore.value = false;
   }
 }
+// Row virtualization: only the rows in (and near) the viewport are in the DOM,
+// so huge histories stay light. Rows are a fixed height; a spacer holds the
+// full scroll height and the window is translated into place. ROW_H must match
+// --row-commit and the graph's ROW_H.
+const HIST_ROW_H = 34;
+const histScrollTop = ref(0);
+const histHeight = ref(800);
+const histBodyEl = ref<HTMLElement | null>(null);
+const histWindow = computed(() => {
+  const total = visibleCommits.value.length;
+  const buf = 12;
+  const start = Math.max(0, Math.floor(histScrollTop.value / HIST_ROW_H) - buf);
+  const end = Math.min(total, Math.ceil((histScrollTop.value + histHeight.value) / HIST_ROW_H) + buf);
+  return { items: visibleCommits.value.slice(start, end), offset: start * HIST_ROW_H, total };
+});
 function onHistScroll(e: Event) {
   const el = e.target as HTMLElement;
+  histScrollTop.value = el.scrollTop;
+  histHeight.value = el.clientHeight;
   if (el.scrollHeight - el.scrollTop - el.clientHeight < 600) loadMoreCommits();
 }
+function measureHist() {
+  if (histBodyEl.value) histHeight.value = histBodyEl.value.clientHeight;
+}
+watch([() => view.value, () => repo.value?.path], () => nextTick(measureHist));
 const branches = ref<BranchInfo[]>([]);
 const status = ref<StatusEntry[]>([]);
 const selected = ref<string | null>(null);
@@ -894,6 +915,11 @@ const paletteItems = computed<PaletteItem[]>(() => {
     { id: "a-accounts", label: "Accounts", group: "Action", action: () => openSettings("accounts") },
     { id: "a-theme", label: "Toggle theme", group: "Action", action: toggleTheme },
     { id: "a-stash", label: "Stash all changes", group: "Action", action: doStash },
+    { id: "a-clone", label: "Clone repository…", group: "Action", action: () => (cloneOpen.value = true) },
+    { id: "a-reveal", label: "Reveal in file manager", group: "Action", action: () => repo.value && revealItemInDir(repo.value.path) },
+    { id: "a-terminal", label: "Open in terminal", group: "Action", action: () => repo.value && openInTerminal(repo.value.path).catch(() => {}) },
+    { id: "a-newtab", label: "New tab", group: "Action", action: goHome },
+    { id: "a-copybranch", label: `Copy branch name (${headBranch.value})`, group: "Action", action: () => copy(headBranch.value, "Branch name") },
   );
   // Git Flow branch actions when a Git Flow model is initialised.
   const f = flowCfg.value;
@@ -912,9 +938,18 @@ const paletteItems = computed<PaletteItem[]>(() => {
   if (redoOp.value)
     items.push({ id: "a-redo", label: "Redo commit", group: "Action", action: redo });
 
+  const rpath = repo.value.path;
   for (const b of localBranches.value) {
     if (!b.is_head)
       items.push({ id: `br-${b.name}`, label: `Checkout ${b.name}`, hint: "branch", group: "Branch", action: () => checkout(b.name) });
+  }
+  for (const t of tags.value) {
+    items.push({ id: `t-${t.name}`, label: `Go to tag ${t.name}`, hint: "tag", group: "Tag", action: () => scrollToCommit(t.target) });
+  }
+  for (const s of stashes.value) {
+    const label = `stash@{${s.index}}: ${s.message.replace(/^WIP on /, "")}`;
+    items.push({ id: `st-a-${s.index}`, label: `Apply ${label}`, hint: "stash", group: "Stash", action: () => runOp(() => stashApply(rpath, s.index), "Stash applied") });
+    items.push({ id: `st-p-${s.index}`, label: `Pop ${label}`, hint: "stash", group: "Stash", action: () => runOp(() => stashPop(rpath, s.index), "Stash popped") });
   }
   for (const c of commits.value) {
     items.push({
@@ -1261,9 +1296,12 @@ function scrollToCommit(id: string | null) {
   view.value = "history";
   commitFilter.value = "";
   selected.value = id;
-  nextTick(() =>
-    document.querySelector(`.commit-row[data-id="${id}"]`)?.scrollIntoView({ block: "center" }),
-  );
+  // Rows are virtualized, so the target may not be in the DOM — scroll by index.
+  nextTick(() => {
+    const el = histBodyEl.value;
+    const idx = visibleCommits.value.findIndex((c) => c.id === id);
+    if (el && idx >= 0) el.scrollTop = Math.max(0, idx * HIST_ROW_H - el.clientHeight / 2);
+  });
 }
 
 /** Run a git op, refresh, toast on success/failure. */
@@ -1552,14 +1590,15 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
             <button class="cols-btn" title="Show/hide columns" @click="histColsMenu">⋯</button>
           </div>
 
-          <div class="hist-body" @scroll="onHistScroll">
+          <div ref="histBodyEl" class="hist-body" @scroll="onHistScroll">
             <div v-if="!commitFilter" class="graph-col" :style="{ width: graphColWidth + 'px' }" @wheel="onGraphWheel">
               <CommitGraph :commits="commits" :style="{ transform: `translateX(${-graphScrollX}px)` }" @width="graphWidth = $event" />
             </div>
 
-            <div class="rows" :class="{ filtered: commitFilter }">
+            <div class="rows" :class="{ filtered: commitFilter }" :style="{ height: histWindow.total * 34 + 'px' }">
+            <div class="rows-window" :style="{ transform: `translateY(${histWindow.offset}px)` }">
             <div
-              v-for="c in visibleCommits"
+              v-for="c in histWindow.items"
               :key="c.id"
               class="commit-row"
               :data-id="c.id"
@@ -1592,6 +1631,7 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
               </div>
               <span v-if="histCols.showHash" class="cell-hash mono">{{ c.short_id }}</span>
               <span v-if="histCols.showWhen" class="cell-when">{{ relativeTime(c.time) }}</span>
+            </div>
             </div>
             </div>
           </div>
@@ -2022,6 +2062,7 @@ kbd {
 .graph-col :deep(svg) { pointer-events: none; }
 
 .rows { position: relative; z-index: 0; }
+.rows-window { position: absolute; top: 0; left: 0; right: 0; }
 .commit-row {
   display: grid;
   grid-template-columns: var(--hist-cols);
