@@ -23,9 +23,12 @@ interface ServeConfig {
  * session so navigation keeps it.
  */
 function readServe(): ServeConfig | null {
+  // A ?repo= in the URL always wins, so a shared agent can open a different
+  // repo per editor panel / tab.
+  const urlRepo = new URLSearchParams(location.search).get("repo") ?? undefined;
   const injected = (globalThis as unknown as { __PLUMB__?: { port: number; token: string; repo?: string } }).__PLUMB__;
   if (injected?.port && injected.token) {
-    return { origin: `http://127.0.0.1:${injected.port}`, token: injected.token, repo: injected.repo };
+    return { origin: `http://127.0.0.1:${injected.port}`, token: injected.token, repo: urlRepo ?? injected.repo };
   }
   const params = new URLSearchParams(location.search);
   const q = params.get("serve");

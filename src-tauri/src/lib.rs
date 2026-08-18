@@ -153,7 +153,10 @@ fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
     let mut builder = TrayIconBuilder::new().tooltip("Plumb — serving").menu(&menu).on_menu_event(|app, event| {
         match event.id().0.as_str() {
-            "tray_quit" => app.exit(0),
+            "tray_quit" => {
+                serve::clear_discovery();
+                app.exit(0);
+            }
             "tray_open" => {
                 // Promote to a normal windowed app and show the window.
                 #[cfg(target_os = "macos")]

@@ -36,6 +36,53 @@ struct Ctx {
     clients: Clients,
 }
 
+/// Where the running agent advertises itself so editors can find and reuse it
+/// instead of spawning their own server.
+fn discovery_path() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").ok()?;
+        return Some(std::path::PathBuf::from(home).join("Library/Application Support/plumb/serve.json"));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let base = std::env::var("APPDATA").ok()?;
+        return Some(std::path::PathBuf::from(base).join("plumb").join("serve.json"));
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let base = std::env::var("XDG_CONFIG_HOME")
+            .ok()
+            .or_else(|| std::env::var("HOME").ok().map(|h| format!("{h}/.config")))?;
+        return Some(std::path::PathBuf::from(base).join("plumb").join("serve.json"));
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
+fn write_discovery(port: u16, token: &str) {
+    if let Some(p) = discovery_path() {
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let body = json!({ "port": port, "token": token, "pid": std::process::id() }).to_string();
+        if std::fs::write(&p, body.as_bytes()).is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
+            }
+        }
+    }
+}
+
+/// Remove the advertisement (best effort) when the agent shuts down cleanly.
+pub fn clear_discovery() {
+    if let Some(p) = discovery_path() {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
 /// Random hex token minted per server session.
 fn gen_token() -> String {
     let mut b = [0u8; 24];
@@ -57,6 +104,7 @@ pub fn start(app: AppHandle, repo: Option<String>) {
     let port = server.server_addr().to_ip().map(|a| a.port()).unwrap_or(0);
     println!("PLUMB_SERVE port={port} token={token}");
     let _ = std::io::Write::flush(&mut std::io::stdout());
+    write_discovery(port, &token);
 
     // Forward the events the app emits into every subscriber's queue.
     let clients: Clients = Default::default();
