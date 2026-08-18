@@ -2853,7 +2853,7 @@ mod tests {
         let sig = repo.signature().unwrap();
         repo.commit(Some("HEAD"), &sig, &sig, "first", &tree, &[]).unwrap();
 
-        let commits = list_commits(p(&d), Some(10)).unwrap();
+        let commits = list_commits(p(&d), Some(10), None).unwrap();
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].summary, "first");
         assert!(!reflog(p(&d)).unwrap().is_empty());
