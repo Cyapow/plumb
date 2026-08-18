@@ -130,13 +130,14 @@ fn initial_path(state: tauri::State<LaunchPath>) -> Option<String> {
     state.0.lock().ok().and_then(|mut g| g.take())
 }
 
-/// The first non-flag CLI argument, if it's an existing directory (a repo to open).
+/// The first CLI argument that resolves to an existing directory (a repo to
+/// open) — skips flags and the `serve` subcommand.
 fn arg_repo_path(args: &[String]) -> Option<String> {
     args.iter()
         .skip(1)
-        .find(|a| !a.starts_with('-'))
-        .and_then(|p| std::fs::canonicalize(p).ok())
-        .filter(|p| p.is_dir())
+        .filter(|a| !a.starts_with('-') && a.as_str() != "serve")
+        .filter_map(|p| std::fs::canonicalize(p).ok())
+        .find(|p| p.is_dir())
         .map(|p| p.to_string_lossy().to_string())
 }
 
@@ -190,7 +191,8 @@ pub fn run() {
             // hidden — an embedded editor webview is the client, not this window.
             if std::env::args().any(|a| a == "serve") {
                 use tauri::Manager;
-                serve::start(app.handle().clone());
+                let repo = arg_repo_path(&std::env::args().collect::<Vec<_>>());
+                serve::start(app.handle().clone(), repo);
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.hide();
                 }

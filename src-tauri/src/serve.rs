@@ -12,6 +12,17 @@ use tauri::AppHandle;
 
 use crate::{accounts, git};
 
+/// The built frontend, embedded so `plumb serve` can host the app itself — the
+/// browser tab / editor webview loads it straight from the server, no dev server.
+static DIST: include_dir::Dir<'_> = include_dir::include_dir!("$CARGO_MANIFEST_DIR/../dist");
+
+/// Per-session server context shared with every request handler.
+struct Ctx {
+    token: String,
+    port: u16,
+    repo: Option<String>,
+}
+
 /// Random hex token minted per server session.
 fn gen_token() -> String {
     let mut b = [0u8; 24];
@@ -21,7 +32,7 @@ fn gen_token() -> String {
 
 /// Start the RPC server on a background thread. Prints a machine-readable
 /// `PLUMB_SERVE port=<port> token=<token>` line the launching editor parses.
-pub fn start(app: AppHandle) {
+pub fn start(app: AppHandle, repo: Option<String>) {
     let token = std::env::var("PLUMB_SERVE_TOKEN").unwrap_or_else(|_| gen_token());
     let server = match tiny_http::Server::http("127.0.0.1:0") {
         Ok(s) => s,
@@ -34,14 +45,15 @@ pub fn start(app: AppHandle) {
     println!("PLUMB_SERVE port={port} token={token}");
     let _ = std::io::Write::flush(&mut std::io::stdout());
 
+    let ctx = std::sync::Arc::new(Ctx { token, port, repo });
     // One thread per request: the frontend fires many commands at once, and a
     // single slow one (e.g. a network call) must not stall the others.
     let server = std::sync::Arc::new(server);
     std::thread::spawn(move || loop {
         match server.recv() {
             Ok(req) => {
-                let (app, token) = (app.clone(), token.clone());
-                std::thread::spawn(move || handle(&app, &token, req));
+                let (app, ctx) = (app.clone(), ctx.clone());
+                std::thread::spawn(move || handle(&app, &ctx, req));
             }
             Err(_) => break,
         }
@@ -80,7 +92,65 @@ fn respond(req: tiny_http::Request, status: u16, body: Value, origin: Option<&st
     let _ = req.respond(resp);
 }
 
-fn handle(app: &AppHandle, token: &str, mut req: tiny_http::Request) {
+fn respond_bytes(req: tiny_http::Request, status: u16, bytes: Vec<u8>, content_type: &str, origin: Option<&str>) {
+    let mut resp = tiny_http::Response::from_data(bytes)
+        .with_status_code(status)
+        .with_header(hdr("Content-Type", content_type));
+    if let Some(o) = origin {
+        resp = resp.with_header(hdr("Access-Control-Allow-Origin", o)).with_header(hdr("Vary", "Origin"));
+    }
+    let _ = req.respond(resp);
+}
+
+fn mime_for(path: &str) -> &'static str {
+    match path.rsplit('.').next().unwrap_or("") {
+        "html" => "text/html; charset=utf-8",
+        "js" | "mjs" => "text/javascript",
+        "css" => "text/css",
+        "svg" => "image/svg+xml",
+        "json" => "application/json",
+        "woff2" => "font/woff2",
+        "woff" => "font/woff",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "ico" => "image/x-icon",
+        "wasm" => "application/wasm",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Serve the embedded frontend. The index page gets the serve config injected so
+/// the app's transport talks to this server (token never travels in the URL).
+fn serve_static(req: tiny_http::Request, ctx: &Ctx, cors: Option<&str>) {
+    let raw = req.url().split('?').next().unwrap_or("/").to_string();
+    let rel = if raw == "/" || raw.is_empty() { "index.html".to_string() } else { raw.trim_start_matches('/').to_string() };
+    match DIST.get_file(&rel) {
+        Some(f) if rel == "index.html" => {
+            let html = String::from_utf8_lossy(f.contents());
+            let repo_json = ctx
+                .repo
+                .as_deref()
+                .and_then(|r| serde_json::to_string(r).ok())
+                .unwrap_or_else(|| "null".into());
+            let inject = format!(
+                "<script>window.__PLUMB__={{port:{},token:\"{}\",repo:{}}};</script>",
+                ctx.port, ctx.token, repo_json
+            );
+            let out = if html.contains("<head>") {
+                html.replacen("<head>", &format!("<head>{inject}"), 1)
+            } else {
+                format!("{inject}{html}")
+            };
+            respond_bytes(req, 200, out.into_bytes(), "text/html; charset=utf-8", cors);
+        }
+        Some(f) => respond_bytes(req, 200, f.contents().to_vec(), mime_for(&rel), cors),
+        None => respond(req, 404, json!({ "error": "not found" }), cors),
+    }
+}
+
+fn handle(app: &AppHandle, ctx: &Ctx, mut req: tiny_http::Request) {
     // Grant CORS back only to an allowed origin; capture it before consuming req.
     let cors = header(&req, "origin").filter(|o| allowed_origin(o)).map(|o| o.to_string());
     let cors = cors.as_deref();
@@ -89,8 +159,9 @@ fn handle(app: &AppHandle, token: &str, mut req: tiny_http::Request) {
     if req.method() == &tiny_http::Method::Options {
         return respond(req, 204, json!({}), cors);
     }
-    if req.url() == "/" && req.method() == &tiny_http::Method::Get {
-        return respond(req, 200, json!({ "service": "plumb", "ok": true }), cors);
+    // Any GET is a request for the embedded frontend.
+    if req.method() == &tiny_http::Method::Get {
+        return serve_static(req, ctx, cors);
     }
     if req.method() != &tiny_http::Method::Post || req.url() != "/rpc" {
         return respond(req, 404, json!({ "error": "not found" }), cors);
@@ -102,8 +173,8 @@ fn handle(app: &AppHandle, token: &str, mut req: tiny_http::Request) {
         }
     }
     // Per-session token, as a Bearer header or x-plumb-token.
-    let authed = header(&req, "authorization").map(|v| v == format!("Bearer {token}")).unwrap_or(false)
-        || header(&req, "x-plumb-token").map(|v| v == token).unwrap_or(false);
+    let authed = header(&req, "authorization").map(|v| v == format!("Bearer {}", ctx.token)).unwrap_or(false)
+        || header(&req, "x-plumb-token").map(|v| v == ctx.token).unwrap_or(false);
     if !authed {
         return respond(req, 401, json!({ "error": "unauthorized" }), cors);
     }

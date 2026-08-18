@@ -12,11 +12,12 @@
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
-      { "command": "plumb.openRepo", "title": "Open in Plumb", "category": "Plumb" }
+      { "command": "plumb.openPanel", "title": "Open Plumb Panel", "category": "Plumb" },
+      { "command": "plumb.openRepo", "title": "Open in Plumb (desktop)", "category": "Plumb" }
     ],
     "menus": {
-      "scm/title": [{ "command": "plumb.openRepo", "group": "navigation" }],
-      "explorer/context": [{ "command": "plumb.openRepo", "group": "navigation@99" }]
+      "scm/title": [{ "command": "plumb.openPanel", "group": "navigation" }],
+      "explorer/context": [{ "command": "plumb.openPanel", "group": "navigation@99" }]
     },
     "configuration": {
       "title": "Plumb",
