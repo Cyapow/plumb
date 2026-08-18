@@ -63,10 +63,50 @@ export function invoke<T = unknown>(command: string, args?: Record<string, unkno
   return serve ? httpInvoke<T>(command, args) : tauriInvoke<T>(command, args);
 }
 
+// Served mode receives events by long-polling GET /events: the server blocks
+// until events queue (or ~25s), returns them, and we immediately re-poll.
+// Events queue per client id between polls, so none are dropped.
+const eventListeners = new Map<string, Set<(e: { payload: unknown }) => void>>();
+const clientId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+let pollStarted = false;
+
+async function pollLoop() {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  while (serve) {
+    try {
+      const res = await fetch(`${serve.origin}/events?token=${encodeURIComponent(serve.token)}&id=${clientId}`);
+      if (!res.ok) {
+        await sleep(1000);
+        continue;
+      }
+      const data = (await res.json()) as { events?: { event: string; payload: unknown }[] };
+      for (const ev of data.events ?? []) {
+        eventListeners.get(ev.event)?.forEach((cb) => cb({ payload: ev.payload }));
+      }
+    } catch {
+      await sleep(1000);
+    }
+  }
+}
+
+function servedListen(event: string, handler: (e: { payload: unknown }) => void): UnlistenFn {
+  if (!pollStarted) {
+    pollStarted = true;
+    void pollLoop();
+  }
+  let set = eventListeners.get(event);
+  if (!set) {
+    set = new Set();
+    eventListeners.set(event, set);
+  }
+  set.add(handler);
+  return () => {
+    eventListeners.get(event)?.delete(handler);
+  };
+}
+
 /** Subscribe to a backend event; resolves to an unlisten function. */
 export function listen<T = unknown>(event: string, handler: EventCallback<T>): Promise<UnlistenFn> {
-  // Served mode has no event stream yet (WebSocket is the next slice); resolve
-  // to a no-op unlisten so callers work unchanged.
-  if (serve) return Promise.resolve(() => {});
+  if (serve) return Promise.resolve(servedListen(event, handler as (e: { payload: unknown }) => void));
   return tauriListen<T>(event, handler);
 }
