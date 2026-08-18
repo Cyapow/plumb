@@ -26,7 +26,8 @@ import {
   type SettingsSection,
 } from "../lib/ui";
 import { BUILTIN_THEMES, MODERNIST_BASE, type Theme, type TokenKey } from "../lib/themes";
-import { getAutostart, setAutostart } from "../lib/git";
+import { getAutostart, setAutostart, installVscodeExtension } from "../lib/git";
+import { openUrl } from "../lib/native";
 import { toast } from "../lib/ui";
 import AiProvidersPanel from "./AiProvidersPanel.vue";
 import ConnectionsPanel from "./ConnectionsPanel.vue";
@@ -47,6 +48,23 @@ async function onAutostart(enabled: boolean) {
     autostart.value = enabled;
   } catch (e) {
     toast("Autostart failed", String(e), "error");
+  }
+}
+
+const installing = ref(false);
+const installMsg = ref("");
+const installErr = ref(false);
+async function installVsc() {
+  installing.value = true;
+  installMsg.value = "";
+  installErr.value = false;
+  try {
+    installMsg.value = await installVscodeExtension();
+  } catch (e) {
+    installErr.value = true;
+    installMsg.value = String(e);
+  } finally {
+    installing.value = false;
   }
 }
 
@@ -141,6 +159,17 @@ function hex(v: string | undefined): string {
                 Plumb can run inside VS Code and JetBrains as a panel, backed by a small local
                 server. Editors share one background server — the menu-bar agent — and reuse it.
               </div>
+
+              <div class="install-row">
+                <button class="btn-accent" :disabled="installing" @click="installVsc">
+                  <span v-if="installing" class="spinner-sm"></span>{{ installing ? "Installing…" : "Install VS Code extension" }}
+                </button>
+                <button class="btn" @click="openUrl('https://github.com/Cyapow/plumb/tree/main/editors/jetbrains')">
+                  Get the JetBrains plugin ↗
+                </button>
+              </div>
+              <div v-if="installMsg" class="install-msg" :class="{ err: installErr }">{{ installMsg }}</div>
+
               <label class="toggle-row">
                 <input type="checkbox" :checked="autostart" @change="onAutostart(($event.target as HTMLInputElement).checked)" />
                 <div>
@@ -337,6 +366,14 @@ function hex(v: string | undefined): string {
 .integrations .toggle-row input { margin-top: 3px; accent-color: var(--accent); }
 .integrations .tr-title { font-size: 13px; font-weight: 600; }
 .integrations .tr-sub { font-size: 11.5px; color: var(--text-faint); margin-top: 2px; }
+.integrations .install-row { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-3); }
+.integrations .btn-accent { display: inline-flex; align-items: center; gap: var(--space-2); height: 32px; padding: 0 14px; background: var(--accent); color: var(--accent-on); border: 1px solid var(--accent); font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.integrations .btn-accent:disabled { opacity: 0.7; }
+.integrations .btn { height: 32px; padding: 0 14px; background: var(--raised); border: 1px solid var(--line); color: var(--text); font-size: 12.5px; cursor: pointer; }
+.integrations .install-msg { margin-top: var(--space-2); font-size: 11.5px; color: var(--text-mid); }
+.integrations .install-msg.err { color: var(--accent); }
+.integrations .spinner-sm { width: 11px; height: 11px; border: 2px solid color-mix(in srgb, var(--accent-on) 40%, transparent); border-top-color: var(--accent-on); border-radius: 50%; animation: plumb-spin 0.7s linear infinite; }
+@keyframes plumb-spin { to { transform: rotate(360deg); } }
 .seg { display: flex; gap: 2px; margin-left: auto; }
 .seg button { padding: 7px 16px; background: var(--raised); border: 1px solid var(--line); font-size: 12.5px; font-weight: 600; color: var(--text-mid); cursor: pointer; }
 .seg button.on { background: var(--accent); color: var(--accent-on); border-color: var(--accent); }
