@@ -68,6 +68,7 @@ import {
   type RepoState,
 } from "./lib/git";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import {
   openContextMenu,
   promptText,
@@ -981,6 +982,7 @@ function scheduleRefresh() {
   autoTimer = window.setTimeout(() => refresh(), 250);
 }
 let unlistenMenu: UnlistenFn | undefined;
+let unlistenOpen: UnlistenFn | undefined;
 /* ── Session restore (reopen where you left off) ──────────────────── */
 const SESSION_KEY = "plumb.session";
 function persistSession() {
@@ -1022,7 +1024,12 @@ onMounted(async () => {
   refreshConnections();
   unlisten = await listen("repo-changed", scheduleRefresh);
   unlistenMenu = await listen<string>("menu-action", (e) => handleMenuAction(e.payload));
+  // Open in Plumb: a folder passed on launch (CLI / editor), or forwarded from
+  // a second `plumb <path>` invocation to this running window.
+  unlistenOpen = await listen<string>("open-path", (e) => e.payload && loadRepo(e.payload));
   restoreSession();
+  const launch = await invoke<string | null>("initial_path").catch(() => null);
+  if (launch) loadRepo(launch);
   // Poll CI every 90s so finished pipelines can notify.
   ciPollTimer = window.setInterval(() => {
     if (repo.value) refreshCiMap(repo.value.path, true);
@@ -1031,6 +1038,7 @@ onMounted(async () => {
 onUnmounted(() => {
   unlisten?.();
   unlistenMenu?.();
+  unlistenOpen?.();
   if (ciPollTimer) clearInterval(ciPollTimer);
 });
 
