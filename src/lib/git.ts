@@ -66,6 +66,14 @@ export function rewordCommit(path: string, id: string, message: string): Promise
 export function setDiffIgnoreWs(ignore: boolean): Promise<void> {
   return invoke("set_diff_ignore_ws", { ignore });
 }
+/** Whether Plumb's background server launches at login. */
+export function getAutostart(): Promise<boolean> {
+  return invoke("get_autostart");
+}
+export function setAutostart(enabled: boolean): Promise<void> {
+  return invoke("set_autostart", { enabled });
+}
+
 export function listSystemFonts(): Promise<string[]> {
   return invoke("list_system_fonts");
 }

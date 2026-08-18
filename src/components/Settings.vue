@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // App settings modal. Sections live in a left rail; content on the right.
-import { computed, onMounted } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import {
   settings,
   appState,
@@ -26,14 +26,35 @@ import {
   type SettingsSection,
 } from "../lib/ui";
 import { BUILTIN_THEMES, MODERNIST_BASE, type Theme, type TokenKey } from "../lib/themes";
+import { getAutostart, setAutostart } from "../lib/git";
+import { toast } from "../lib/ui";
 import AiProvidersPanel from "./AiProvidersPanel.vue";
 import ConnectionsPanel from "./ConnectionsPanel.vue";
 import PlumbMark from "./PlumbMark.vue";
+
+// Start-at-login for the background server (Integrations tab).
+const autostart = ref(false);
+watch(
+  () => settings.section,
+  (s) => {
+    if (s === "integrations") getAutostart().then((v) => (autostart.value = v)).catch(() => {});
+  },
+  { immediate: true },
+);
+async function onAutostart(enabled: boolean) {
+  try {
+    await setAutostart(enabled);
+    autostart.value = enabled;
+  } catch (e) {
+    toast("Autostart failed", String(e), "error");
+  }
+}
 
 const sections: { id: SettingsSection; label: string }[] = [
   { id: "accounts", label: "Accounts" },
   { id: "ai", label: "AI providers" },
   { id: "appearance", label: "Appearance" },
+  { id: "integrations", label: "Integrations" },
   { id: "about", label: "About" },
 ];
 
@@ -113,6 +134,21 @@ function hex(v: string | undefined): string {
           <div class="content-body">
             <ConnectionsPanel v-if="settings.section === 'accounts'" />
             <AiProvidersPanel v-else-if="settings.section === 'ai'" />
+
+            <div v-else-if="settings.section === 'integrations'" class="integrations">
+              <div class="row-title">Editor panel</div>
+              <div class="row-sub">
+                Plumb can run inside VS Code and JetBrains as a panel, backed by a small local
+                server. Editors share one background server — the menu-bar agent — and reuse it.
+              </div>
+              <label class="toggle-row">
+                <input type="checkbox" :checked="autostart" @change="onAutostart(($event.target as HTMLInputElement).checked)" />
+                <div>
+                  <div class="tr-title">Start Plumb’s background server at login</div>
+                  <div class="tr-sub">Runs in the menu bar (no Dock icon) so editor panels open instantly.</div>
+                </div>
+              </label>
+            </div>
 
             <div v-else-if="settings.section === 'appearance'" class="appearance">
               <div class="row-title">Theme</div>
@@ -297,6 +333,10 @@ function hex(v: string | undefined): string {
 .row { display: flex; align-items: center; gap: var(--space-4); }
 .row-title { font-size: 13px; font-weight: 600; }
 .row-sub { font-size: 11.5px; color: var(--text-faint); margin-top: 2px; }
+.integrations .toggle-row { display: flex; align-items: flex-start; gap: 10px; margin-top: var(--space-4); cursor: pointer; }
+.integrations .toggle-row input { margin-top: 3px; accent-color: var(--accent); }
+.integrations .tr-title { font-size: 13px; font-weight: 600; }
+.integrations .tr-sub { font-size: 11.5px; color: var(--text-faint); margin-top: 2px; }
 .seg { display: flex; gap: 2px; margin-left: auto; }
 .seg button { padding: 7px 16px; background: var(--raised); border: 1px solid var(--line); font-size: 12.5px; font-weight: 600; color: var(--text-mid); cursor: pointer; }
 .seg button.on { background: var(--accent); color: var(--accent-on); border-color: var(--accent); }

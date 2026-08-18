@@ -130,6 +130,21 @@ fn initial_path(state: tauri::State<LaunchPath>) -> Option<String> {
     state.0.lock().ok().and_then(|mut g| g.take())
 }
 
+/// Whether Plumb's background server is set to launch at login.
+#[tauri::command]
+fn get_autostart(app: AppHandle) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+/// Enable/disable launching the background server (serve mode) at login.
+#[tauri::command]
+fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let m = app.autolaunch();
+    if enabled { m.enable() } else { m.disable() }.map_err(|e| e.to_string())
+}
+
 /// The first CLI argument that resolves to an existing directory (a repo to
 /// open) — skips flags and the `serve` subcommand.
 fn arg_repo_path(args: &[String]) -> Option<String> {
@@ -194,6 +209,11 @@ pub fn run() {
         }))
         .manage(LaunchPath(std::sync::Mutex::new(launched)))
         .manage(watcher::WatchState::default())
+        // At-login autostart launches the background server (menu-bar agent).
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["serve"]),
+        ))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init());
@@ -240,6 +260,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             initial_path,
+            get_autostart,
+            set_autostart,
             git::open_repo,
             git::is_repo,
             git::init_repo,
