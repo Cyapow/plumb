@@ -523,7 +523,37 @@ const laneColor = (i: number) => `var(--lane-${i % 7})`;
 // width (reported by CommitGraph) so lanes never overlap the message text;
 // collapses to the base width when filtering (graph hidden).
 const graphWidth = ref(0);
-const graphGutter = computed(() => (commitFilter.value ? "130px" : `${Math.max(130, graphWidth.value + 22)}px`));
+// Graph gutter: auto-fits the graph up to a cap, past which it's scrollable;
+// draggable to override. graphScrollX pans the (clipped) graph horizontally.
+const GRAPH_GUTTER_MAX = 300;
+const graphGutterManual = ref<number | null>(null);
+const graphScrollX = ref(0);
+const graphGutterPx = computed(() => {
+  if (commitFilter.value) return 130;
+  if (graphGutterManual.value != null) return graphGutterManual.value;
+  return Math.min(Math.max(130, graphWidth.value + 22), GRAPH_GUTTER_MAX);
+});
+const graphGutter = computed(() => `${graphGutterPx.value}px`);
+// The overlay starts at left:12, so its visible width is the gutter minus that.
+const graphColWidth = computed(() => Math.max(0, graphGutterPx.value - 12));
+const graphMaxScroll = computed(() => Math.max(0, graphWidth.value - graphColWidth.value));
+watch([graphGutterPx, graphWidth], () => {
+  if (graphScrollX.value > graphMaxScroll.value) graphScrollX.value = graphMaxScroll.value;
+});
+function onGraphWheel(e: WheelEvent) {
+  if (Math.abs(e.deltaX) <= Math.abs(e.deltaY) || graphMaxScroll.value === 0) return; // let vertical scroll the list
+  e.preventDefault();
+  graphScrollX.value = Math.min(graphMaxScroll.value, Math.max(0, graphScrollX.value + e.deltaX));
+}
+function startGraphResize(e: PointerEvent) {
+  e.preventDefault();
+  const startX = e.clientX;
+  const startW = graphGutterPx.value;
+  const move = (m: PointerEvent) => { graphGutterManual.value = Math.max(60, startW + (m.clientX - startX)); };
+  const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+}
 
 // History columns: resizable widths + which are shown. Persisted per install.
 interface HistCols { author: number; hash: number; when: number; showAuthor: boolean; showHash: boolean; showWhen: boolean }
@@ -540,12 +570,12 @@ const histGrid = computed(() => {
   if (histCols.showWhen) parts.push(`${histCols.when}px`);
   return parts.join(" ");
 });
-// Drag a column's right edge to resize.
+// Drag a column's left edge to resize (dragging left widens it).
 function startColResize(col: "author" | "hash" | "when", e: PointerEvent) {
   e.preventDefault();
   const startX = e.clientX;
   const startW = histCols[col];
-  const move = (m: PointerEvent) => { histCols[col] = Math.max(56, startW + (m.clientX - startX)); };
+  const move = (m: PointerEvent) => { histCols[col] = Math.max(56, startW - (m.clientX - startX)); };
   const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
   window.addEventListener("pointermove", move);
   window.addEventListener("pointerup", up);
@@ -1514,16 +1544,18 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
 
         <div v-else class="hist-list" :style="{ '--graph-gutter': graphGutter, '--hist-cols': histGrid }">
           <div class="hist-head mono">
-            <span class="col-graph">GRAPH</span>
-            <span class="hh-col">COMMIT</span>
-            <span v-if="histCols.showAuthor" class="hh-col">AUTHOR<span class="col-grip" @pointerdown="startColResize('author', $event)"></span></span>
-            <span v-if="histCols.showHash" class="hh-col">HASH<span class="col-grip" @pointerdown="startColResize('hash', $event)"></span></span>
-            <span v-if="histCols.showWhen" class="col-when hh-col">WHEN</span>
+            <span class="col-graph">GRAPH<span class="col-grip right" title="Resize graph" @pointerdown="startGraphResize"></span></span>
+            <span class="hh-col col-commit">COMMIT</span>
+            <span v-if="histCols.showAuthor" class="hh-col pad"><span class="col-grip" @pointerdown="startColResize('author', $event)"></span>AUTHOR</span>
+            <span v-if="histCols.showHash" class="hh-col pad"><span class="col-grip" @pointerdown="startColResize('hash', $event)"></span>HASH</span>
+            <span v-if="histCols.showWhen" class="col-when hh-col pad"><span class="col-grip" @pointerdown="startColResize('when', $event)"></span>WHEN</span>
             <button class="cols-btn" title="Show/hide columns" @click="histColsMenu">⋯</button>
           </div>
 
           <div class="hist-body" @scroll="onHistScroll">
-            <div v-if="!commitFilter" class="graph-col"><CommitGraph :commits="commits" @width="graphWidth = $event" /></div>
+            <div v-if="!commitFilter" class="graph-col" :style="{ width: graphColWidth + 'px' }" @wheel="onGraphWheel">
+              <CommitGraph :commits="commits" :style="{ transform: `translateX(${-graphScrollX}px)` }" @width="graphWidth = $event" />
+            </div>
 
             <div class="rows" :class="{ filtered: commitFilter }">
             <div
@@ -1903,8 +1935,8 @@ kbd {
 .repo-head { padding: 14px var(--space-3); border-bottom: 1px solid var(--raised); }
 .repo-title-row { display: flex; align-items: center; gap: 4px; }
 .repo-title-row .repo-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rh-btn { flex: none; width: 22px; height: 20px; background: transparent; border: none; color: var(--text-faint); font-size: 12px; cursor: pointer; }
-.rh-btn:hover { color: var(--accent); }
+.rh-btn { flex: none; width: 22px; height: 22px; display: inline-grid; place-items: center; background: transparent; border: none; color: var(--accent); font-size: 15px; cursor: pointer; }
+.rh-btn:hover { color: var(--accent-strong, var(--accent)); }
 .repo-title { font-size: 13px; font-weight: 700; }
 .repo-path { font-size: 10.5px; color: var(--text-faint); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .side-filter { display: flex; align-items: center; gap: 6px; margin: var(--space-2) var(--space-3) 0; padding: 0 8px; height: 28px; background: var(--bg); border: 1px solid var(--line); }
@@ -1913,7 +1945,7 @@ kbd {
 .side-filter input:focus { outline: none; }
 .side-filter input::placeholder { color: var(--text-faint); }
 .side-filter .sf-x { flex: none; width: 16px; height: 16px; background: var(--raised); border: 1px solid var(--line); color: var(--text-dim); font-size: 9px; cursor: pointer; line-height: 1; }
-.tag-count { margin-left: auto; font-size: 10px; color: var(--text-faint); }
+.tag-count { margin-left: auto; font-size: 10px; color: var(--accent); }
 
 .side-section { padding: var(--space-4) 0 0; }
 .side-section .section-label { padding: 0 var(--space-3) var(--space-2); }
@@ -1933,8 +1965,8 @@ kbd {
   color: var(--text-mid);
 }
 .side-row.mono { font-size: 12px; }
-.side-row .ico { width: 12px; color: var(--text-dim); }
-.side-row .count { margin-left: auto; font-size: 10.5px; background: var(--line); padding: 1px 5px; }
+.side-row .ico { width: 12px; color: var(--accent); }
+.side-row .count { margin-left: auto; font-size: 10.5px; background: var(--accent-fill); color: var(--text-mid); padding: 1px 5px; }
 .side-row.active { font-weight: 600; background: var(--raised); box-shadow: inset 2px 0 0 var(--accent); color: var(--text); }
 .side-row.branch.head { color: var(--text); font-weight: 500; }
 .remote-row .remote-host { margin-left: auto; font-size: 10.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 55%; }
@@ -1974,16 +2006,20 @@ kbd {
   color: var(--text-faint);
   padding-right: 22px;
 }
-.hist-head .col-graph { padding-left: var(--space-3); }
+.hist-head .col-graph { position: relative; padding-left: var(--space-3); }
 .hist-head .col-when { text-align: right; }
 .hist-head .hh-col { position: relative; }
-.col-grip { position: absolute; top: -6px; right: -4px; width: 9px; height: 28px; cursor: col-resize; }
-.col-grip::after { content: ""; position: absolute; left: 4px; top: 7px; width: 1px; height: 14px; background: var(--line); }
-.col-grip:hover::after { background: var(--accent); }
-.cols-btn { position: absolute; top: 3px; right: 4px; width: 18px; height: 20px; background: var(--raised); border: 1px solid var(--line); color: var(--text-dim); font-size: 12px; line-height: 1; cursor: pointer; }
+.hist-head .hh-col.pad { padding-left: 14px; }
+.col-grip { position: absolute; top: -6px; left: -1px; width: 12px; height: 28px; cursor: col-resize; z-index: 2; }
+.col-grip.right { left: auto; right: -7px; }
+.col-grip::after { content: ""; position: absolute; left: 5px; top: 0; width: 1px; height: 100%; background: var(--line); }
+.col-grip:hover::after { background: var(--accent); width: 2px; }
+.col-grip.right::after { left: 6px; }
+.cols-btn { position: absolute; top: 3px; right: 4px; width: 18px; height: 20px; background: var(--raised); border: 1px solid var(--line); color: var(--text-dim); font-size: 12px; line-height: 1; cursor: pointer; z-index: 3; }
 
 .hist-body { position: relative; flex: 1; overflow-y: auto; }
-.graph-col { position: absolute; left: 12px; top: 0; pointer-events: none; z-index: 1; }
+.graph-col { position: absolute; left: 12px; top: 0; overflow: hidden; z-index: 1; }
+.graph-col :deep(svg) { pointer-events: none; }
 
 .rows { position: relative; z-index: 0; }
 .commit-row {
@@ -1997,7 +2033,9 @@ kbd {
 .commit-row:hover { background: color-mix(in srgb, var(--raised) 55%, transparent); }
 .commit-row.selected { background: var(--raised); box-shadow: inset 2px 0 0 var(--accent); }
 
-.cell-commit { display: flex; align-items: center; gap: var(--space-2); min-width: 0; overflow: hidden; }
+.cell-author, .cell-hash, .cell-when { padding-left: 14px; }
+.hist-head .col-commit { padding-left: 18px; }
+.cell-commit { display: flex; align-items: center; gap: var(--space-2); min-width: 0; overflow: hidden; padding-left: 18px; }
 .ci-badge { flex: none; width: 15px; height: 15px; display: inline-grid; place-items: center; font-size: 9.5px; font-weight: 800; color: var(--accent-on); cursor: pointer; }
 .ci-badge.success { background: var(--lane-3); }
 .ci-badge.failure { background: var(--accent); }
