@@ -13,7 +13,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Listener, Manager};
 
-use crate::{accounts, git, watcher};
+use crate::{accounts, ai, git, watcher};
 
 /// One long-poll subscriber. Events queue in the channel between polls so none
 /// are lost; `last` drives idle cleanup.
@@ -332,14 +332,22 @@ fn okv<T: serde::Serialize>(v: T) -> Result<Value, String> {
 /// Route a command name + (camelCase, as the frontend sends) args to the same
 /// core the desktop app calls. Coverage grows toward the full 135.
 fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, String> {
+    use tauri::async_runtime::block_on;
     let s = |k: &str| args[k].as_str().unwrap_or_default().to_string();
     let sopt = |k: &str| args[k].as_str().map(String::from);
     let b = |k: &str| args[k].as_bool().unwrap_or(false);
     let uz = |k: &str| args[k].as_u64().unwrap_or(0) as usize;
+    let su64 = |k: &str| args[k].as_u64().unwrap_or(0);
     let vs = |k: &str| {
         args[k]
             .as_array()
             .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
+    let uzs = |k: &str| {
+        args[k]
+            .as_array()
+            .map(|a| a.iter().filter_map(|x| x.as_u64().map(|n| n as usize)).collect::<Vec<usize>>())
             .unwrap_or_default()
     };
 
@@ -418,6 +426,119 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, Strin
         "pr_target" => ok(accounts::pr_target(app.clone(), s("path"))),
         "list_pull_requests" => ok(tauri::async_runtime::block_on(accounts::list_pull_requests(app.clone(), s("repoPath")))),
         "list_ci_statuses" => ok(tauri::async_runtime::block_on(accounts::list_ci_statuses(app.clone(), s("repoPath")))),
+
+        // ── Git: config / identity / ignore / description / misc ──
+        "set_config" => ok(git::set_config(s("path"), s("key"), s("value"), b("global"))),
+        "unset_config" => ok(git::unset_config(s("path"), s("key"), b("global"))),
+        "set_git_identity" => ok(git::set_git_identity(s("path"), s("name"), s("email"), b("global"))),
+        "get_repo_description" => ok(git::get_repo_description(s("path"))),
+        "set_repo_description" => ok(git::set_repo_description(s("path"), s("text"))),
+        "get_gitignore" => ok(git::get_gitignore(s("path"))),
+        "set_gitignore" => ok(git::set_gitignore(s("path"), s("text"))),
+        "add_to_gitignore" => ok(git::add_to_gitignore(s("path"), s("pattern"))),
+        "reword_commit" => ok(block_on(git::reword_commit(s("path"), s("id"), s("message")))),
+        "set_diff_ignore_ws" => {
+            git::set_diff_ignore_ws(b("ignore"));
+            okv(Value::Null)
+        }
+        "list_system_fonts" => okv(git::list_system_fonts()),
+        "init_repo" => ok(git::init_repo(s("path"), sopt("branch"))),
+        "initial_commit" => ok(block_on(git::initial_commit(s("path"), s("message")))),
+        "clone_repo" => ok(block_on(git::clone_repo(s("url"), s("parentDir")))),
+        "open_in_editor" => ok(git::open_in_editor(s("path"))),
+        "open_in_terminal" => ok(git::open_in_terminal(s("path"))),
+
+        // ── Git: staging (hunk / line) ──
+        "stage_hunk" => ok(block_on(git::stage_hunk(s("path"), s("file"), uz("hunkIndex")))),
+        "unstage_hunk" => ok(block_on(git::unstage_hunk(s("path"), s("file"), uz("hunkIndex")))),
+        "stage_lines" => ok(block_on(git::stage_lines(s("path"), s("file"), uz("hunkIndex"), uzs("lines")))),
+        "unstage_lines" => ok(block_on(git::unstage_lines(s("path"), s("file"), uz("hunkIndex"), uzs("lines")))),
+
+        // ── Git: stash (legacy variants) ──
+        "stash_save" => ok(block_on(git::stash_save(s("path"), sopt("message")))),
+        "stash_apply" => ok(block_on(git::stash_apply(s("path"), uz("index")))),
+
+        // ── Git: branches / merge / rebase / remotes ──
+        "merge_branch" => ok(block_on(git::merge_branch(s("path"), s("name")))),
+        "rebase_branch" => ok(block_on(git::rebase_branch(s("path"), s("onto")))),
+        "merge_into" => ok(block_on(git::merge_into(s("path"), s("source"), s("target"), b("deleteSource")))),
+        "checkout_remote_branch" => ok(block_on(git::checkout_remote_branch(s("path"), s("remoteBranch")))),
+        "connect_remote_branch" => ok(block_on(git::connect_remote_branch(s("path"), s("url"), s("branch")))),
+        "delete_remote_branch" => ok(block_on(git::delete_remote_branch(s("path"), s("remote"), s("branch")))),
+        "list_remote_branches" => ok(block_on(git::list_remote_branches(s("url")))),
+        "push_branch" => ok(block_on(git::push_branch(s("path"), s("branch")))),
+        "pull_mode" => ok(block_on(git::pull_mode(s("path"), s("mode")))),
+        "push_advanced" => ok(block_on(git::push_advanced(s("path"), sopt("remote"), b("forceWithLease"), b("pushTags"), b("setUpstream")))),
+        "add_remote" => ok(git::add_remote(s("path"), s("name"), s("url"))),
+        "rename_remote" => ok(git::rename_remote(s("path"), s("from"), s("to"))),
+        "remove_remote" => ok(git::remove_remote(s("path"), s("name"))),
+        "set_remote_url" => ok(git::set_remote_url(s("path"), s("name"), s("url"))),
+        "prune_remote" => ok(block_on(git::prune_remote(s("path"), s("name")))),
+        "rebase_interactive" => {
+            let steps: Vec<git::RebaseStep> = serde_json::from_value(args["steps"].clone()).map_err(|e| e.to_string())?;
+            ok(block_on(git::rebase_interactive(s("path"), sopt("base"), steps)))
+        }
+
+        // ── Git: conflicts ──
+        "conflict_sides" => ok(git::conflict_sides(s("path"), s("file"))),
+        "resolve_conflict" => ok(block_on(git::resolve_conflict(s("path"), s("file"), s("side")))),
+        "resolve_conflict_content" => ok(block_on(git::resolve_conflict_content(s("path"), s("file"), s("content")))),
+
+        // ── Git: bisect / submodules / worktrees ──
+        "bisect_start" => ok(block_on(git::bisect_start(s("path"), s("bad"), s("good")))),
+        "bisect_mark" => ok(block_on(git::bisect_mark(s("path"), s("verdict")))),
+        "bisect_reset" => ok(block_on(git::bisect_reset(s("path")))),
+        "list_submodules" => ok(git::list_submodules(s("path"))),
+        "update_submodules" => ok(block_on(git::update_submodules(s("path"), b("init")))),
+        "list_worktrees" => ok(block_on(git::list_worktrees(s("path")))),
+        "add_worktree" => ok(block_on(git::add_worktree(s("path"), s("newPath"), s("branch"), b("newBranch")))),
+        "remove_worktree" => ok(block_on(git::remove_worktree(s("path"), s("worktreePath")))),
+
+        // ── Git Flow ──
+        "flow_config" => ok(git::flow_config(s("path"))),
+        "flow_init" => ok(block_on(git::flow_init(s("path"), s("main"), s("develop"), s("versiontag")))),
+        "flow_start" => ok(block_on(git::flow_start(s("path"), s("kind"), s("name")))),
+        "flow_finish" => ok(block_on(git::flow_finish(s("path"), s("kind"), s("name"), sopt("version")))),
+        "flow_set_type" => ok(git::flow_set_type(s("path"), s("workflow"))),
+        "flow_set_environments" => ok(git::flow_set_environments(s("path"), s("csv"))),
+
+        // ── AI ──
+        "list_ai_providers" => ok(ai::list_ai_providers(app.clone())),
+        "save_ai_provider" => {
+            let provider: ai::AiProvider = serde_json::from_value(args["provider"].clone()).map_err(|e| e.to_string())?;
+            ok(ai::save_ai_provider(app.clone(), provider, b("makeDefault"), sopt("apiKey")))
+        }
+        "save_ai_provider_from_env" => {
+            let provider: ai::AiProvider = serde_json::from_value(args["provider"].clone()).map_err(|e| e.to_string())?;
+            ok(ai::save_ai_provider_from_env(app.clone(), provider, s("envVar"), b("makeDefault")))
+        }
+        "remove_ai_provider" => ok(ai::remove_ai_provider(app.clone(), s("id"))),
+        "set_default_ai_provider" => ok(ai::set_default_ai_provider(app.clone(), s("id"))),
+        "has_api_key" => okv(ai::has_api_key(s("id"))),
+        "list_ollama_models" => ok(block_on(ai::list_ollama_models(s("endpoint")))),
+        "list_provider_models" => ok(block_on(ai::list_provider_models(s("kind"), s("vendor"), s("endpoint"), sopt("apiKey"), sopt("providerId")))),
+        "detect_env_keys" => okv(block_on(ai::detect_env_keys())),
+        "openrouter_login" => ok(block_on(ai::openrouter_login(app.clone()))),
+        "generate_commit_message" => ok(block_on(ai::generate_commit_message(app.clone(), s("repoPath"), sopt("providerId"), b("conventional"), s("style")))),
+        "explain_diff" => ok(block_on(ai::explain_diff(app.clone(), s("repoPath"), sopt("providerId"), sopt("sha")))),
+        "ai_group_changes" => ok(block_on(ai::ai_group_changes(app.clone(), s("repoPath"), sopt("providerId"), b("conventional")))),
+        "test_ai_provider" => ok(block_on(ai::test_ai_provider(app.clone(), s("id")))),
+
+        // ── Accounts ──
+        "connect_account" => ok(block_on(accounts::connect_account(app.clone(), s("provider"), s("baseUrl"), s("token"), sopt("label"), sopt("username")))),
+        "remove_connection" => ok(accounts::remove_connection(app.clone(), s("id"))),
+        "test_connection" => ok(block_on(accounts::test_connection(app.clone(), s("id")))),
+        "github_device_start" => ok(block_on(accounts::github_device_start(s("clientId")))),
+        "github_device_poll" => ok(block_on(accounts::github_device_poll(app.clone(), s("clientId"), s("deviceCode"), su64("interval")))),
+        "gitlab_oauth_login" => ok(block_on(accounts::gitlab_oauth_login(app.clone(), s("clientId")))),
+        "create_pull_request" => ok(block_on(accounts::create_pull_request(app.clone(), s("repoPath"), s("sourceBranch"), s("targetBranch"), s("title"), s("body"), b("draft")))),
+        "create_remote_repo" => ok(block_on(accounts::create_remote_repo(app.clone(), s("connectionId"), s("name"), b("private")))),
+        "list_account_repos" => ok(block_on(accounts::list_account_repos(app.clone(), s("connectionId")))),
+        "list_workflows" => ok(block_on(accounts::list_workflows(app.clone(), s("repoPath")))),
+        "trigger_pipeline" => ok(block_on(accounts::trigger_pipeline(app.clone(), s("repoPath"), s("gitRef"), sopt("workflowId")))),
+        "pipeline_detail" => ok(block_on(accounts::pipeline_detail(app.clone(), s("repoPath"), s("sha")))),
+        "pipeline_action" => ok(block_on(accounts::pipeline_action(app.clone(), s("repoPath"), s("id"), s("action")))),
+        "job_log" => ok(block_on(accounts::job_log(app.clone(), s("repoPath"), s("jobId")))),
 
         other => Err(format!("command '{other}' is not exposed over plumb serve yet")),
     }
