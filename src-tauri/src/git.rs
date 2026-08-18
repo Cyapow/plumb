@@ -43,7 +43,7 @@ impl Serialize for GitError {
     }
 }
 
-type Result<T> = std::result::Result<T, GitError>;
+pub type Result<T> = std::result::Result<T, GitError>;
 
 /// Summary of the repository itself.
 #[derive(Serialize)]
