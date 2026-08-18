@@ -3,6 +3,7 @@
 // Clicking a file opens the full-screen diff (list docked on the right).
 import { ref, watch } from "vue";
 import { commitDetails, commitFileDiff, type CommitDetail } from "../lib/git";
+import { explainDiff } from "../lib/ai";
 import { initials } from "../lib/format";
 import { openFullscreen } from "../lib/ui";
 
@@ -11,10 +12,18 @@ defineEmits<{ (e: "close"): void }>();
 
 const detail = ref<CommitDetail | null>(null);
 
+// AI explanation of the commit's diff.
+const explaining = ref(false);
+const explanation = ref<string | null>(null);
+const explainErr = ref<string | null>(null);
+
 watch(
   () => [props.commitId, props.repoPath] as const,
   async () => {
     detail.value = null;
+    explanation.value = null;
+    explainErr.value = null;
+    explaining.value = false;
     if (!props.commitId) return;
     try {
       detail.value = await commitDetails(props.repoPath, props.commitId);
@@ -24,6 +33,20 @@ watch(
   },
   { immediate: true },
 );
+
+async function explain() {
+  if (!props.commitId) return;
+  explaining.value = true;
+  explainErr.value = null;
+  explanation.value = null;
+  try {
+    explanation.value = await explainDiff(props.repoPath, props.commitId);
+  } catch (e) {
+    explainErr.value = String(e);
+  } finally {
+    explaining.value = false;
+  }
+}
 
 function openFile(file: string) {
   if (!detail.value || !props.commitId) return;
@@ -73,6 +96,15 @@ function fmtDate(unix: number): string {
         </div>
       </div>
       <p v-if="detail.body" class="body">{{ detail.body }}</p>
+
+      <div class="explain">
+        <button class="explain-btn" :disabled="explaining" @click="explain">
+          <span v-if="explaining" class="spin"></span><span v-else class="sparkle">✦</span>
+          {{ explaining ? "Explaining…" : explanation ? "Re-explain" : "Explain this commit" }}
+        </button>
+        <div v-if="explainErr" class="explain-err mono">{{ explainErr }}</div>
+        <div v-if="explanation" class="explain-out">{{ explanation }}</div>
+      </div>
 
       <div class="files-label section-label">
         Changed files <span class="count mono">{{ detail.files.length }}</span>
@@ -126,6 +158,31 @@ function fmtDate(unix: number): string {
 .who .name { font-size: 11px; color: var(--text-mid); overflow: hidden; text-overflow: ellipsis; }
 .who .when { font-size: 10.5px; color: var(--text-faint); margin-top: 2px; }
 .body { font-size: 12px; color: var(--text-mid); line-height: 1.55; white-space: pre-wrap; margin: 0 0 var(--space-4); }
+
+.explain { margin-bottom: var(--space-4); }
+.explain-btn {
+  display: flex; align-items: center; gap: var(--space-2);
+  height: 30px; padding: 0 12px;
+  background: var(--accent); border: 1px solid var(--accent); color: var(--accent-on);
+  font-size: 12px; font-weight: 700; cursor: pointer;
+}
+.explain-btn .sparkle, .explain-btn .spin { color: var(--accent-on); }
+.explain-btn:disabled { opacity: 0.7; cursor: default; }
+.explain-btn .sparkle { font-size: 12px; }
+.explain-btn .spin {
+  width: 11px; height: 11px; flex: none;
+  border: 2px solid color-mix(in srgb, var(--accent-on) 45%, transparent);
+  border-top-color: var(--accent-on); border-radius: 50%;
+  animation: plumb-spin 0.7s linear infinite;
+}
+@keyframes plumb-spin { to { transform: rotate(360deg); } }
+.explain-err { margin-top: var(--space-2); font-size: 11px; color: var(--accent); }
+.explain-out {
+  margin-top: var(--space-2); padding: var(--space-3);
+  background: var(--bg); border: 1px solid var(--line);
+  font-size: 12px; color: var(--text); line-height: 1.6; white-space: pre-wrap;
+  user-select: text;
+}
 
 .files-label {
   display: flex; align-items: center; gap: var(--space-2);
