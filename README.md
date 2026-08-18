@@ -124,6 +124,12 @@ npx vue-tsc --noEmit                               # type-check the frontend
 
 CI runs both on every push and pull request (`.github/workflows/ci.yml`).
 
+**Skipping Keychain prompts while debugging.** Each rebuild re-signs the binary,
+so macOS treats it as a new app and re-asks to authorize Keychain access. Set
+`PLUMB_DEV_SECRETS=1` to store AI keys and account tokens in a `0600` JSON file
+(`~/.plumb-dev-secrets.json`) instead of the Keychain — no prompts. It's a
+plaintext dev-only store; never set it for a build you distribute.
+
 ## Releasing
 
 Releases are cut with the version-bump helper, which updates every manifest, tags
