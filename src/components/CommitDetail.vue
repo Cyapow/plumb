@@ -2,7 +2,7 @@
 // Right-dock panel for a selected history commit: metadata + changed-file list.
 // Clicking a file opens the full-screen diff (list docked on the right).
 import { onUnmounted, ref, watch } from "vue";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "../lib/transport";
 import { commitDetails, commitFileDiff, type CommitDetail } from "../lib/git";
 import { explainDiff } from "../lib/ai";
 import { initials } from "../lib/format";

@@ -1,5 +1,5 @@
 // Typed wrappers over the Rust `accounts` commands.
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./transport";
 
 export interface Connection {
   id: string;
