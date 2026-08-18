@@ -87,3 +87,16 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+
+      # Package the VS Code extension once (OS-agnostic) and attach it to the
+      # release, so the app can install it via Settings → Integrations.
+      - name: Package + upload VS Code extension
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd editors/vscode
+          npm install
+          npm run compile
+          npx --yes @vscode/vsce package --out plumb-vscode.vsix
+          gh release upload "${{ github.ref_name }}" plumb-vscode.vsix --clobber --repo "$GITHUB_REPOSITORY"

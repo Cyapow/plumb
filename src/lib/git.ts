@@ -74,6 +74,11 @@ export function setAutostart(enabled: boolean): Promise<void> {
   return invoke("set_autostart", { enabled });
 }
 
+/** Download the packaged VS Code extension from the latest release and install it. */
+export function installVscodeExtension(): Promise<string> {
+  return invoke("install_vscode_extension");
+}
+
 export function listSystemFonts(): Promise<string[]> {
   return invoke("list_system_fonts");
 }

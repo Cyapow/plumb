@@ -130,6 +130,74 @@ fn initial_path(state: tauri::State<LaunchPath>) -> Option<String> {
     state.0.lock().ok().and_then(|mut g| g.take())
 }
 
+/// Locate a usable VS Code `code` CLI.
+fn find_code() -> Option<String> {
+    let mut candidates = vec!["code".to_string(), "code-insiders".to_string()];
+    #[cfg(target_os = "macos")]
+    {
+        candidates.push("/usr/local/bin/code".into());
+        candidates.push("/opt/homebrew/bin/code".into());
+        candidates.push("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code".into());
+    }
+    candidates.into_iter().find(|c| {
+        std::process::Command::new(c)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
+}
+
+/// Download the packaged VS Code extension from the latest GitHub release and
+/// install it via the `code` CLI.
+#[tauri::command]
+async fn install_vscode_extension() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        use std::io::Read;
+        let code = find_code().ok_or_else(|| {
+            "VS Code's `code` command isn't on your PATH. In VS Code, run “Shell Command: Install 'code' command in PATH”, then try again.".to_string()
+        })?;
+        let rel: serde_json::Value = ureq::get("https://api.github.com/repos/Cyapow/plumb/releases/latest")
+            .set("user-agent", "Plumb")
+            .set("accept", "application/vnd.github+json")
+            .timeout(std::time::Duration::from_secs(20))
+            .call()
+            .map_err(|e| e.to_string())?
+            .into_json()
+            .map_err(|e| e.to_string())?;
+        let url = rel["assets"]
+            .as_array()
+            .and_then(|a| a.iter().find(|x| x["name"].as_str().map(|n| n.ends_with(".vsix")).unwrap_or(false)))
+            .and_then(|x| x["browser_download_url"].as_str())
+            .ok_or_else(|| "The latest release doesn't include a VS Code extension yet.".to_string())?;
+        let mut bytes = Vec::new();
+        ureq::get(url)
+            .timeout(std::time::Duration::from_secs(60))
+            .call()
+            .map_err(|e| e.to_string())?
+            .into_reader()
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        let tmp = std::env::temp_dir().join("plumb-vscode.vsix");
+        std::fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
+        let out = std::process::Command::new(&code)
+            .arg("--install-extension")
+            .arg(&tmp)
+            .arg("--force")
+            .output()
+            .map_err(|e| e.to_string())?;
+        if out.status.success() {
+            Ok("VS Code extension installed. Reload VS Code, then run “Plumb: Open Plumb Panel”.".to_string())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Whether Plumb's background server is set to launch at login.
 #[tauri::command]
 fn get_autostart(app: AppHandle) -> bool {
@@ -262,6 +330,7 @@ pub fn run() {
             initial_path,
             get_autostart,
             set_autostart,
+            install_vscode_extension,
             git::open_repo,
             git::is_repo,
             git::init_repo,
