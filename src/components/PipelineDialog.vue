@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Pipeline(s) for a commit: stages/jobs with status, retry / cancel, open logs.
 import { ref, watch } from "vue";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "../lib/native";
 import { pipelineDetail, pipelineAction, jobLog, type PipelineDetail, type PipelineJob } from "../lib/accounts";
 import { toast } from "../lib/ui";
 

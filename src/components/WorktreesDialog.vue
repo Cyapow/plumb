@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Manage git worktrees: open, add, remove.
 import { ref, watch } from "vue";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { openFolder } from "../lib/native";
 import { listWorktrees, addWorktree, removeWorktree, type WorktreeInfo } from "../lib/git";
 import { toast } from "../lib/ui";
 
@@ -27,8 +27,8 @@ watch(open, (o) => {
 });
 
 async function chooseDir() {
-  const picked = await openDialog({ directory: true, multiple: false, title: "New worktree folder" });
-  if (typeof picked === "string") newPath.value = picked;
+  const picked = await openFolder("New worktree folder");
+  if (picked) newPath.value = picked;
 }
 
 async function add() {

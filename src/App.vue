@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, watch } from "vue";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
+import { revealItemInDir, openUrl, openFolder } from "./lib/native";
 import {
   openRepo,
   isRepo,
@@ -654,8 +653,8 @@ function startDrag(e: MouseEvent) {
 }
 
 async function chooseRepo() {
-  const picked = await openDialog({ directory: true, multiple: false, title: "Open a repository" });
-  if (typeof picked !== "string") return;
+  const picked = await openFolder("Open a repository");
+  if (!picked) return;
   // Offer to initialize a repo if the folder isn't one yet.
   const already = await isRepo(picked).catch(() => true);
   if (!already) {

@@ -5,7 +5,7 @@
 //  • "Get a key" deep-links for direct OpenAI/Anthropic/Gemini
 //  • model lists fetched from the provider API (no manual model guessing)
 import { computed, onMounted, ref } from "vue";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "../lib/native";
 import {
   saveAiProvider,
   saveAiProviderFromEnv,

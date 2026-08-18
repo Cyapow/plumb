@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Read-only repository overview (like Tower's repo card).
 import { ref, watch } from "vue";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { revealItemInDir } from "../lib/native";
 import {
   openRepo,
   listRemotes,

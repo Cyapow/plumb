@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { openFolder } from "../lib/native";
 import { cloneRepo } from "../lib/git";
 import { listAccountRepos, type RepoRef } from "../lib/accounts";
 import { connectionsStore, refreshConnections, openSettings } from "../lib/ui";
@@ -61,8 +61,8 @@ function pickRepo(r: RepoRef) {
 }
 
 async function chooseDir() {
-  const picked = await openDialog({ directory: true, multiple: false, title: "Choose a destination folder" });
-  if (typeof picked === "string") dir.value = picked;
+  const picked = await openFolder("Choose a destination folder");
+  if (picked) dir.value = picked;
 }
 
 async function clone() {

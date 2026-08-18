@@ -2,7 +2,7 @@
 // Workflows: pick a branching model (Git Flow, GitHub Flow, GitLab Flow,
 // Trunk-based, or a custom Git Flow) and drive its branch operations natively.
 import { computed, ref, watch } from "vue";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "../lib/native";
 import {
   flowConfig, flowInit, flowStart, flowFinish, flowSetType, flowSetEnvironments,
   createBranch, mergeInto, setConfig, type FlowConfig, type WorkflowType,

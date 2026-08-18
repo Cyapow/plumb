@@ -2,7 +2,7 @@
 // Open a pull request (GitHub) or merge request (GitLab) for the current repo,
 // via the connected account that matches its origin.
 import { computed, ref, watch } from "vue";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "../lib/native";
 import { prTarget, createPullRequest } from "../lib/accounts";
 import { pushBranch } from "../lib/git";
 import { toast, openSettings } from "../lib/ui";
