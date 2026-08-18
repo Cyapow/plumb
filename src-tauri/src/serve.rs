@@ -1,17 +1,16 @@
 //! `plumb serve` — a loopback HTTP RPC server exposing the same commands the
 //! desktop app calls over Tauri IPC, so an embedded webview (VS Code / JetBrains)
-//! can drive the real Plumb frontend.
+//! or a plain browser tab can drive the real Plumb frontend.
 //!
 //! Local-only and token-gated by construction: bound to 127.0.0.1 on an
 //! ephemeral port, every request must carry the per-session token, and the Host
-//! header must be loopback (defeats DNS-rebinding). This is the Phase-2
-//! foundation: request/response `POST /rpc` with a command dispatch that grows
-//! toward full parity; event streaming over WebSocket lands next.
+//! header must be loopback (defeats DNS-rebinding). CORS is granted only to
+//! loopback / webview origins. Event streaming over WebSocket lands next.
 
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
-use crate::git;
+use crate::{accounts, git};
 
 /// Random hex token minted per server session.
 fn gen_token() -> String {
@@ -35,89 +34,127 @@ pub fn start(app: AppHandle) {
     println!("PLUMB_SERVE port={port} token={token}");
     let _ = std::io::Write::flush(&mut std::io::stdout());
 
-    std::thread::spawn(move || {
-        for req in server.incoming_requests() {
-            handle(&app, &token, req);
+    // One thread per request: the frontend fires many commands at once, and a
+    // single slow one (e.g. a network call) must not stall the others.
+    let server = std::sync::Arc::new(server);
+    std::thread::spawn(move || loop {
+        match server.recv() {
+            Ok(req) => {
+                let (app, token) = (app.clone(), token.clone());
+                std::thread::spawn(move || handle(&app, &token, req));
+            }
+            Err(_) => break,
         }
     });
 }
 
 fn header<'a>(req: &'a tiny_http::Request, name: &'static str) -> Option<&'a str> {
-    req.headers()
-        .iter()
-        .find(|h| h.field.equiv(name))
-        .map(|h| h.value.as_str())
+    req.headers().iter().find(|h| h.field.equiv(name)).map(|h| h.value.as_str())
 }
 
-fn respond(req: tiny_http::Request, status: u16, body: Value) {
-    let ct = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
-    let resp = tiny_http::Response::from_string(body.to_string())
+/// Only loopback dev servers and editor webviews may make cross-origin calls.
+fn allowed_origin(origin: &str) -> bool {
+    origin == "null"
+        || origin.starts_with("http://localhost")
+        || origin.starts_with("http://127.0.0.1")
+        || origin.starts_with("https://localhost")
+        || origin.starts_with("vscode-webview://")
+        || origin.starts_with("jar:")
+}
+
+fn hdr(name: &str, value: &str) -> tiny_http::Header {
+    tiny_http::Header::from_bytes(name.as_bytes(), value.as_bytes()).unwrap()
+}
+
+fn respond(req: tiny_http::Request, status: u16, body: Value, origin: Option<&str>) {
+    let mut resp = tiny_http::Response::from_string(body.to_string())
         .with_status_code(status)
-        .with_header(ct);
+        .with_header(hdr("Content-Type", "application/json"));
+    if let Some(o) = origin {
+        resp = resp
+            .with_header(hdr("Access-Control-Allow-Origin", o))
+            .with_header(hdr("Access-Control-Allow-Headers", "authorization, x-plumb-token, content-type"))
+            .with_header(hdr("Access-Control-Allow-Methods", "POST, OPTIONS"))
+            .with_header(hdr("Vary", "Origin"));
+    }
     let _ = req.respond(resp);
 }
 
 fn handle(app: &AppHandle, token: &str, mut req: tiny_http::Request) {
-    // Only the RPC endpoint; a bare GET / is a liveness probe.
-    if req.url() == "/" {
-        return respond(req, 200, json!({ "service": "plumb", "ok": true }));
+    // Grant CORS back only to an allowed origin; capture it before consuming req.
+    let cors = header(&req, "origin").filter(|o| allowed_origin(o)).map(|o| o.to_string());
+    let cors = cors.as_deref();
+
+    // Preflight.
+    if req.method() == &tiny_http::Method::Options {
+        return respond(req, 204, json!({}), cors);
+    }
+    if req.url() == "/" && req.method() == &tiny_http::Method::Get {
+        return respond(req, 200, json!({ "service": "plumb", "ok": true }), cors);
     }
     if req.method() != &tiny_http::Method::Post || req.url() != "/rpc" {
-        return respond(req, 404, json!({ "error": "not found" }));
+        return respond(req, 404, json!({ "error": "not found" }), cors);
     }
     // Loopback Host only — blocks DNS-rebinding from a foreign page.
     if let Some(h) = header(&req, "host") {
         if !(h.starts_with("127.0.0.1") || h.starts_with("localhost")) {
-            return respond(req, 403, json!({ "error": "non-loopback host rejected" }));
+            return respond(req, 403, json!({ "error": "non-loopback host rejected" }), cors);
         }
     }
     // Per-session token, as a Bearer header or x-plumb-token.
     let authed = header(&req, "authorization").map(|v| v == format!("Bearer {token}")).unwrap_or(false)
         || header(&req, "x-plumb-token").map(|v| v == token).unwrap_or(false);
     if !authed {
-        return respond(req, 401, json!({ "error": "unauthorized" }));
+        return respond(req, 401, json!({ "error": "unauthorized" }), cors);
     }
 
     let mut body = String::new();
     if req.as_reader().read_to_string(&mut body).is_err() {
-        return respond(req, 400, json!({ "error": "could not read body" }));
+        return respond(req, 400, json!({ "error": "could not read body" }), cors);
     }
     let parsed: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
     let command = parsed["command"].as_str().unwrap_or("").to_string();
     let args = parsed.get("args").cloned().unwrap_or_else(|| json!({}));
 
-    // Mirror `invoke`: 200 with {ok} on success, {error} on failure; the JS
-    // transport resolves the first and rejects the second.
+    // Mirror `invoke`: 200 {ok} on success, {error} on failure.
     match dispatch(app, &command, &args) {
-        Ok(v) => respond(req, 200, json!({ "ok": v })),
-        Err(e) => respond(req, 200, json!({ "error": e })),
+        Ok(v) => respond(req, 200, json!({ "ok": v }), cors),
+        Err(e) => respond(req, 200, json!({ "error": e }), cors),
     }
 }
 
-/// Serialize a command's `Result` for the wire.
-fn ok<T: serde::Serialize>(r: git::Result<T>) -> Result<Value, String> {
+/// Serialize any command `Result` for the wire.
+fn ok<T: serde::Serialize, E: std::fmt::Display>(r: std::result::Result<T, E>) -> Result<Value, String> {
     r.map_err(|x| x.to_string())
         .and_then(|v| serde_json::to_value(v).map_err(|e| e.to_string()))
 }
-/// Serialize a plain (non-Result) value.
 fn okv<T: serde::Serialize>(v: T) -> Result<Value, String> {
     serde_json::to_value(v).map_err(|e| e.to_string())
 }
 
-/// Route a command name + args to the same core the desktop app calls.
-/// Coverage grows toward the full 135; unexposed commands return a clear error.
+/// Route a command name + (camelCase, as the frontend sends) args to the same
+/// core the desktop app calls. Coverage grows toward the full 135.
 fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, String> {
-    let _ = app; // reserved for accounts/ai commands that need AppHandle
     let s = |k: &str| args[k].as_str().unwrap_or_default().to_string();
+    let sopt = |k: &str| args[k].as_str().map(String::from);
+    let b = |k: &str| args[k].as_bool().unwrap_or(false);
+    let uz = |k: &str| args[k].as_u64().unwrap_or(0) as usize;
+    let vs = |k: &str| {
+        args[k]
+            .as_array()
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
 
     match command {
+        // ── Read / render path ──
         "is_repo" => okv(git::is_repo(s("path"))),
         "open_repo" => ok(git::open_repo(s("path"))),
-        "list_commits" => {
-            let limit = args["limit"].as_u64().map(|n| n as usize);
-            let skip = args["skip"].as_u64().map(|n| n as usize);
-            ok(git::list_commits(s("path"), limit, skip))
-        }
+        "list_commits" => ok(git::list_commits(
+            s("path"),
+            args["limit"].as_u64().map(|n| n as usize),
+            args["skip"].as_u64().map(|n| n as usize),
+        )),
         "list_branches" => ok(git::list_branches(s("path"))),
         "working_status" => ok(git::working_status(s("path"))),
         "list_tags" => ok(git::list_tags(s("path"))),
@@ -126,7 +163,62 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, Strin
         "list_files" => ok(tauri::async_runtime::block_on(git::list_files(s("path")))),
         "commit_details" => ok(git::commit_details(s("path"), s("id"))),
         "commit_file_diff" => ok(git::commit_file_diff(s("path"), s("id"), s("file"))),
-        "file_diff" => ok(git::file_diff(s("path"), s("file"), args["staged"].as_bool().unwrap_or(false))),
+        "file_diff" => ok(git::file_diff(s("path"), s("file"), b("staged"))),
+        "repo_state" => ok(git::repo_state(s("path"))),
+        "bisect_status" => ok(git::bisect_status(s("path"))),
+        "git_identity" => ok(git::git_identity(s("path"))),
+        "list_conflicts" => ok(git::list_conflicts(s("path"))),
+        "reflog" => ok(git::reflog(s("path"))),
+        "file_history" => ok(tauri::async_runtime::block_on(git::file_history(s("path"), s("file")))),
+        "blame_file" => ok(tauri::async_runtime::block_on(git::blame_file(s("path"), s("file")))),
+        "search_commits" => ok(tauri::async_runtime::block_on(git::search_commits(
+            s("path"),
+            s("query"),
+            s("mode"),
+            args["limit"].as_u64().map(|n| n as usize),
+        ))),
+        "get_config" => ok(git::get_config(s("path"), vs("keys"))),
+        "compare_refs" => ok(git::compare_refs(s("path"), s("base"), s("compare"))),
+        "compare_file_diff" => ok(git::compare_file_diff(s("path"), s("base"), s("compare"), s("file"))),
+
+        // ── Sync / network actions ──
+        "fetch" => ok(tauri::async_runtime::block_on(git::fetch(s("path")))),
+        "pull" => ok(tauri::async_runtime::block_on(git::pull(s("path")))),
+        "push" => ok(tauri::async_runtime::block_on(git::push(s("path")))),
+        "commit" => ok(git::commit(s("path"), s("message"), b("amend"), b("signOff"), b("sign"))),
+        "stage_paths" => ok(git::stage_paths(s("path"), vs("paths"))),
+        "unstage_paths" => ok(git::unstage_paths(s("path"), vs("paths"))),
+        "unstage_all" => ok(tauri::async_runtime::block_on(git::unstage_all(s("path")))),
+        "discard_paths" => ok(tauri::async_runtime::block_on(git::discard_paths(s("path"), vs("paths")))),
+        "uncommit" => ok(tauri::async_runtime::block_on(git::uncommit(s("path")))),
+        "reset" => ok(tauri::async_runtime::block_on(git::reset(s("path"), s("revspec"), s("mode")))),
+
+        // ── Branch / integrate ──
+        "checkout_branch" => ok(tauri::async_runtime::block_on(git::checkout_branch(s("path"), s("name")))),
+        "checkout_commit" => ok(tauri::async_runtime::block_on(git::checkout_commit(s("path"), s("id")))),
+        "create_branch" => ok(tauri::async_runtime::block_on(git::create_branch(s("path"), s("name"), s("id"), b("checkout")))),
+        "delete_branch" => ok(git::delete_branch(s("path"), s("name"))),
+        "merge_branch_ex" => ok(tauri::async_runtime::block_on(git::merge_branch_ex(
+            s("path"), s("name"), b("squash"), b("noFf"), b("noCommit"), b("verifySignatures"), b("noVerify"),
+        ))),
+        "rebase_branch_ex" => ok(tauri::async_runtime::block_on(git::rebase_branch_ex(s("path"), s("onto"), b("autostash"), b("noVerify")))),
+        "cherry_pick" => ok(tauri::async_runtime::block_on(git::cherry_pick(s("path"), s("id")))),
+        "revert_commit" => ok(tauri::async_runtime::block_on(git::revert_commit(s("path"), s("id")))),
+        "op_abort" => ok(tauri::async_runtime::block_on(git::op_abort(s("path")))),
+        "op_continue" => ok(tauri::async_runtime::block_on(git::op_continue(s("path")))),
+
+        // ── Stash ──
+        "stash_save_ex" => ok(tauri::async_runtime::block_on(git::stash_save_ex(s("path"), sopt("message"), b("includeUntracked"), b("keepIndex")))),
+        "stash_apply_ex" => ok(tauri::async_runtime::block_on(git::stash_apply_ex(s("path"), uz("index"), b("pop"), b("restoreIndex")))),
+        "stash_pop" => ok(tauri::async_runtime::block_on(git::stash_pop(s("path"), uz("index")))),
+        "stash_drop" => ok(git::stash_drop(s("path"), uz("index"))),
+
+        // ── Accounts (need AppHandle) ──
+        "list_connections" => ok(accounts::list_connections(app.clone())),
+        "pr_target" => ok(accounts::pr_target(app.clone(), s("path"))),
+        "list_pull_requests" => ok(tauri::async_runtime::block_on(accounts::list_pull_requests(app.clone(), s("repoPath")))),
+        "list_ci_statuses" => ok(tauri::async_runtime::block_on(accounts::list_ci_statuses(app.clone(), s("repoPath")))),
+
         other => Err(format!("command '{other}' is not exposed over plumb serve yet")),
     }
 }

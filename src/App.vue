@@ -68,7 +68,7 @@ import {
   type RepoState,
 } from "./lib/git";
 import { listen, type UnlistenFn } from "./lib/transport";
-import { invoke } from "./lib/transport";
+import { invoke, isServed, servedRepo } from "./lib/transport";
 import {
   openContextMenu,
   promptText,
@@ -169,7 +169,6 @@ function onHistScroll(e: Event) {
 function measureHist() {
   if (histBodyEl.value) histHeight.value = histBodyEl.value.clientHeight;
 }
-watch([() => view.value, () => repo.value?.path], () => nextTick(measureHist));
 const branches = ref<BranchInfo[]>([]);
 const status = ref<StatusEntry[]>([]);
 const selected = ref<string | null>(null);
@@ -1020,6 +1019,9 @@ async function restoreSession() {
 }
 
 let ciPollTimer: number | undefined;
+// Re-measure the history viewport when it appears or the repo changes.
+watch([() => view.value, () => repo.value?.path], () => nextTick(measureHist));
+
 onMounted(async () => {
   refreshConnections();
   unlisten = await listen("repo-changed", scheduleRefresh);
@@ -1028,8 +1030,14 @@ onMounted(async () => {
   // a second `plumb <path>` invocation to this running window.
   unlistenOpen = await listen<string>("open-path", (e) => e.payload && loadRepo(e.payload));
   restoreSession();
-  const launch = await invoke<string | null>("initial_path").catch(() => null);
-  if (launch) loadRepo(launch);
+  // In served mode (editor/browser), open the repo the session was launched
+  // with; otherwise honour a desktop launch path.
+  if (isServed) {
+    if (servedRepo) loadRepo(servedRepo);
+  } else {
+    const launch = await invoke<string | null>("initial_path").catch(() => null);
+    if (launch) loadRepo(launch);
+  }
   // Poll CI every 90s so finished pipelines can notify.
   ciPollTimer = window.setInterval(() => {
     if (repo.value) refreshCiMap(repo.value.path, true);
