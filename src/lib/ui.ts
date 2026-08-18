@@ -146,7 +146,7 @@ export function closeFullscreen() {
 }
 
 /* ── Settings panel ───────────────────────────────────────────────── */
-export type SettingsSection = "accounts" | "ai" | "appearance" | "about";
+export type SettingsSection = "accounts" | "ai" | "appearance" | "integrations" | "about";
 
 export const settings = reactive<{ open: boolean; section: SettingsSection }>({
   open: false,
