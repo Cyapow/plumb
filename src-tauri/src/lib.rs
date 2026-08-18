@@ -398,6 +398,13 @@ pub fn run() {
             accounts::create_remote_repo,
             watcher::watch_repo,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_app, event| {
+            // Clear the agent's advertisement on any exit (Cmd-Q, window close,
+            // etc.) so editors don't find a stale server.
+            if let tauri::RunEvent::Exit = event {
+                serve::clear_discovery();
+            }
+        });
 }
