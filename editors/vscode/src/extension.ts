@@ -1,16 +1,21 @@
 import * as vscode from "vscode";
-import { spawn, type ChildProcess } from "child_process";
+import { spawn } from "child_process";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import * as http from "http";
 
 /**
  * Two ways to open the current workspace in Plumb:
- *  - "Open in Plumb"        launches the desktop app (single-instance).
- *  - "Open Plumb Panel"     runs `plumb serve` and hosts the real Plumb UI in
- *                           an editor tab via a webview.
+ *  - "Open in Plumb (desktop)" launches the standalone desktop app.
+ *  - "Open Plumb Panel"        hosts the real Plumb UI in an editor tab, backed
+ *                              by a shared `plumb serve` agent (reused across
+ *                              panels/windows; spawned once if not running).
  */
 export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand("plumb.openRepo", (uri?: vscode.Uri) => launchDesktop(uri)),
-    vscode.commands.registerCommand("plumb.openPanel", (uri?: vscode.Uri) => openPanel(context, uri)),
+    vscode.commands.registerCommand("plumb.openPanel", (uri?: vscode.Uri) => openPanel(uri)),
   );
 }
 
@@ -31,7 +36,6 @@ function binaryPath(): string {
   }
 }
 
-/** Launch the standalone desktop app at the folder (single-instance focuses it). */
 function launchDesktop(uri?: vscode.Uri) {
   const folder = workspaceFolder(uri);
   if (!folder) {
@@ -50,35 +54,70 @@ function launchDesktop(uri?: vscode.Uri) {
   }
 }
 
-/** Start `plumb serve <folder>` and resolve once it prints its port + token. */
-function spawnServe(bin: string, folder: string): Promise<{ proc: ChildProcess; port: number; token: string }> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(bin, ["serve", folder], { stdio: ["ignore", "pipe", "pipe"] });
-    let buf = "";
-    const timer = setTimeout(() => {
-      proc.kill();
-      reject(new Error("timed out waiting for `plumb serve` to start"));
-    }, 15000);
-    proc.stdout?.on("data", (d: Buffer) => {
-      buf += d.toString();
-      const m = buf.match(/PLUMB_SERVE port=(\d+) token=(\w+)/);
-      if (m) {
-        clearTimeout(timer);
-        resolve({ proc, port: Number(m[1]), token: m[2] });
-      }
+/* ── Shared serve agent ── */
+
+function discoveryPath(): string {
+  if (process.platform === "darwin") return path.join(os.homedir(), "Library/Application Support/plumb/serve.json");
+  if (process.platform === "win32") return path.join(process.env.APPDATA || os.homedir(), "plumb", "serve.json");
+  return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "plumb", "serve.json");
+}
+
+function readDiscovery(): { port: number; token: string; pid: number } | null {
+  try {
+    return JSON.parse(fs.readFileSync(discoveryPath(), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function health(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = http.get({ host: "127.0.0.1", port, path: "/", timeout: 800 }, (r) => {
+      r.resume();
+      resolve((r.statusCode ?? 500) < 500);
     });
-    proc.on("error", (e) => {
-      clearTimeout(timer);
-      reject(e);
-    });
-    proc.on("exit", (code) => {
-      clearTimeout(timer);
-      reject(new Error(`\`plumb serve\` exited (${code}). Is this a build that supports serve mode?`));
+    req.on("error", () => resolve(false));
+    req.on("timeout", () => {
+      req.destroy();
+      resolve(false);
     });
   });
 }
 
-async function openPanel(_context: vscode.ExtensionContext, uri?: vscode.Uri) {
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Return the port of a live agent, reusing one if advertised, else spawning it. */
+async function ensureServer(bin: string, folder: string): Promise<number> {
+  const disc = readDiscovery();
+  if (disc && pidAlive(disc.pid) && (await health(disc.port))) return disc.port;
+
+  // Spawn a detached, persistent agent; it advertises itself in the discovery
+  // file, which we then wait for.
+  const child = spawn(bin, ["serve", folder], { detached: true, stdio: "ignore" });
+  let spawnError: Error | undefined;
+  child.on("error", (e) => (spawnError = e));
+  child.unref();
+
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    if (spawnError) throw spawnError;
+    const d = readDiscovery();
+    if (d && pidAlive(d.pid) && (await health(d.port))) return d.port;
+    await sleep(300);
+  }
+  throw new Error("`plumb serve` didn't start. Set `plumb.binaryPath` to a build that supports serve mode.");
+}
+
+async function openPanel(uri?: vscode.Uri) {
   const folder = workspaceFolder(uri);
   if (!folder) {
     vscode.window.showWarningMessage("Plumb: open a folder or workspace first.");
@@ -90,30 +129,28 @@ async function openPanel(_context: vscode.ExtensionContext, uri?: vscode.Uri) {
     enableScripts: true,
     retainContextWhenHidden: true,
   });
+  panel.webview.html = shellHtml("Starting Plumb…", "#888");
 
-  panel.webview.html = `<!DOCTYPE html><html><body style="margin:0;background:#161514;color:#888;font-family:sans-serif">
-    <div style="padding:24px">Starting Plumb…</div></body></html>`;
-
-  let proc: ChildProcess | undefined;
   try {
-    const started = await spawnServe(bin, folder);
-    proc = started.proc;
+    const port = await ensureServer(bin, folder);
     // asExternalUri makes the local port reachable from the webview, including
-    // over Remote / Codespaces where 127.0.0.1 alone wouldn't resolve.
-    const external = await vscode.env.asExternalUri(vscode.Uri.parse(`http://127.0.0.1:${started.port}`));
-    const src = external.toString();
+    // over Remote / Codespaces. This panel opens its own repo via ?repo=.
+    const external = await vscode.env.asExternalUri(vscode.Uri.parse(`http://127.0.0.1:${port}`));
     const origin = `${external.scheme}://${external.authority}`;
+    const src = `${external.toString().replace(/\/$/, "")}/?repo=${encodeURIComponent(folder)}`;
     panel.webview.html = `<!DOCTYPE html><html><head><meta charset="utf-8">
       <meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src ${origin}; style-src 'unsafe-inline';">
       <style>html,body{margin:0;height:100%}iframe{border:0;width:100%;height:100vh;display:block}</style>
       </head><body><iframe src="${src}"></iframe></body></html>`;
   } catch (err) {
-    panel.webview.html = `<!DOCTYPE html><html><body style="margin:0;background:#161514;color:#e0663a;font-family:sans-serif">
-      <div style="padding:24px">Couldn't start Plumb: ${escapeHtml(String(err))}<br><br>
-      Set <code>plumb.binaryPath</code> to a Plumb build that supports <code>serve</code>.</div></body></html>`;
+    panel.webview.html = shellHtml(`Couldn't start Plumb: ${escapeHtml(String(err))}`, "#e0663a");
   }
+  // The agent is shared and persistent — closing a panel does not stop it.
+}
 
-  panel.onDidDispose(() => proc?.kill());
+function shellHtml(message: string, color: string): string {
+  return `<!DOCTYPE html><html><body style="margin:0;background:#161514;color:${color};font-family:sans-serif">
+    <div style="padding:24px">${escapeHtml(message)}</div></body></html>`;
 }
 
 function escapeHtml(s: string): string {
