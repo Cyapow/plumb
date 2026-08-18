@@ -2,13 +2,21 @@
 // Renders just the graph column: lane segments + a node per commit row.
 // Node shape encodes kind (design rule "hue plus form"):
 //   filled square = commit · hollow square = merge · ringed = HEAD.
-import { computed } from "vue";
+//
+// The SVG is full-height and sits absolutely inside the history scroller, so it
+// scrolls in lockstep with the commit rows — no separate scroll context. It
+// emits its pixel width so the list can reserve a matching text gutter.
+import { computed, watch } from "vue";
 import type { CommitRow } from "../lib/git";
 import { layoutGraph, NODE_R, LANE_W } from "../lib/graph";
 
 const props = defineProps<{ commits: CommitRow[] }>();
+const emit = defineEmits<{ (e: "width", w: number): void }>();
+
 const layout = computed(() => layoutGraph(props.commits));
 const laneVar = (lane: number) => `var(--lane-${lane})`;
+
+watch(() => layout.value.width, (w) => emit("width", w), { immediate: true });
 </script>
 
 <template>
@@ -21,7 +29,7 @@ const laneVar = (lane: number) => `var(--lane-${lane})`;
   >
     <line
       v-for="(s, i) in layout.segments"
-      :key="i"
+      :key="'s' + i"
       :x1="s.x1"
       :y1="s.y1"
       :x2="s.x2"

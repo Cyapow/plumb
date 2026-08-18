@@ -81,8 +81,8 @@ export function addRemote(path: string, name: string, url: string): Promise<void
   return invoke("add_remote", { path, name, url });
 }
 
-export function listCommits(path: string, limit?: number): Promise<CommitRow[]> {
-  return invoke("list_commits", { path, limit });
+export function listCommits(path: string, limit?: number, skip?: number): Promise<CommitRow[]> {
+  return invoke("list_commits", { path, limit, skip: skip ?? 0 });
 }
 
 export function listBranches(path: string): Promise<BranchInfo[]> {
