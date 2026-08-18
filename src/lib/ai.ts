@@ -111,6 +111,11 @@ export function generateCommitMessage(
   return invoke("generate_commit_message", { repoPath, providerId, conventional, style });
 }
 
+/** Plain-language explanation of a commit's diff (or the working diff when sha omitted). */
+export function explainDiff(repoPath: string, sha?: string, providerId?: string | null): Promise<string> {
+  return invoke("explain_diff", { repoPath, sha: sha ?? null, providerId: providerId ?? null });
+}
+
 export interface CommitGroup {
   message: string;
   files: string[];

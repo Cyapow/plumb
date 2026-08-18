@@ -266,6 +266,7 @@ pub fn run() {
             ai::save_ai_provider_from_env,
             ai::openrouter_login,
             ai::generate_commit_message,
+            ai::explain_diff,
             ai::ai_group_changes,
             ai::test_ai_provider,
             accounts::list_connections,

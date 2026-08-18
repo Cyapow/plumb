@@ -301,6 +301,66 @@ fn run_provider(provider: &AiProvider, prompt: &str) -> Result<String> {
     }
 }
 
+fn pick_provider(cfg: &AiConfig, provider_id: Option<String>) -> Result<AiProvider> {
+    provider_id
+        .and_then(|id| cfg.providers.iter().find(|p| p.id == id).cloned())
+        .or_else(|| cfg.default_id.as_ref().and_then(|d| cfg.providers.iter().find(|p| &p.id == d).cloned()))
+        .ok_or_else(|| AiError::Msg("No AI provider configured.".into()))
+}
+
+/// The subject + patch text for a commit (truncated for the model).
+fn commit_diff(path: &str, sha: &str) -> Result<(String, String)> {
+    let subj = std::process::Command::new("git")
+        .current_dir(path)
+        .args(["log", "-1", "--format=%s", sha])
+        .output()
+        .map_err(|e| AiError::Msg(format!("git log: {e}")))?;
+    let subject = String::from_utf8_lossy(&subj.stdout).trim().to_string();
+    let out = std::process::Command::new("git")
+        .current_dir(path)
+        .args(["show", "--no-color", "--format=", "-p", sha])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|e| AiError::Msg(format!("git show: {e}")))?;
+    let diff: String = String::from_utf8_lossy(&out.stdout).chars().take(16000).collect();
+    Ok((subject, diff))
+}
+
+fn build_explain_prompt(subject: &str, diff: &str) -> String {
+    format!(
+        "You are a senior engineer explaining a code change to a teammate reviewing it.\n\
+         Change subject: {subject}\n\n\
+         Diff (unified, possibly truncated):\n{diff}\n\n\
+         Explain what this change does and why. Begin with a one-sentence summary, then a short \
+         bullet list of the key changes and their impact, and finally note any risks or things to \
+         review. Be concise and concrete; do not restate the diff or quote large code blocks."
+    )
+}
+
+/// Explain a commit's changes (by sha), or the working diff when sha is None.
+#[tauri::command]
+pub async fn explain_diff(
+    app: AppHandle,
+    repo_path: String,
+    provider_id: Option<String>,
+    sha: Option<String>,
+) -> Result<String> {
+    let cfg = load(&app)?;
+    let provider = pick_provider(&cfg, provider_id)?;
+    let (subject, diff) = match &sha {
+        Some(s) => commit_diff(&repo_path, s)?,
+        None => ("Working changes".to_string(), worktree_diff(&repo_path)?),
+    };
+    if diff.trim().is_empty() {
+        return Err(AiError::Msg("No changes to explain.".into()));
+    }
+    let prompt = build_explain_prompt(&subject, &diff);
+    let out = tauri::async_runtime::spawn_blocking(move || run_provider(&provider, &prompt))
+        .await
+        .map_err(|e| AiError::Msg(e.to_string()))??;
+    Ok(out.trim().to_string())
+}
+
 /* ── AI: split a working tree into several commits (design plate 13) ── */
 
 #[derive(Serialize, Deserialize)]

@@ -1966,7 +1966,7 @@ kbd {
 }
 .side-row.mono { font-size: 12px; }
 .side-row .ico { width: 12px; color: var(--accent); }
-.side-row .count { margin-left: auto; font-size: 10.5px; background: var(--accent-fill); color: var(--text-mid); padding: 1px 5px; }
+.side-row .count { margin-left: auto; font-size: 10.5px; font-weight: 700; background: var(--accent); color: var(--accent-on); padding: 1px 5px; }
 .side-row.active { font-weight: 600; background: var(--raised); box-shadow: inset 2px 0 0 var(--accent); color: var(--text); }
 .side-row.branch.head { color: var(--text); font-weight: 500; }
 .remote-row .remote-host { margin-left: auto; font-size: 10.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 55%; }
