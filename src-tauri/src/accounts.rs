@@ -55,23 +55,16 @@ pub struct ConnectionConfig {
 
 const TOKEN_SERVICE: &str = "app.plumb.desktop.git";
 
-fn token_entry(id: &str) -> Result<keyring::Entry> {
-    keyring::Entry::new(TOKEN_SERVICE, id).map_err(|e| AccountError::Msg(format!("Keychain: {e}")))
-}
 fn store_token(id: &str, token: &str) -> Result<()> {
-    token_entry(id)?
-        .set_password(token)
+    crate::secrets::store(TOKEN_SERVICE, id, token)
         .map_err(|e| AccountError::Msg(format!("Couldn't save token: {e}")))
 }
 fn read_token(id: &str) -> Result<String> {
-    token_entry(id)?
-        .get_password()
-        .map_err(|_| AccountError::Msg("No token in the Keychain for this account.".into()))
+    crate::secrets::read(TOKEN_SERVICE, id)
+        .map_err(|_| AccountError::Msg("No token stored for this account.".into()))
 }
 fn delete_token(id: &str) {
-    if let Ok(e) = token_entry(id) {
-        let _ = e.delete_credential();
-    }
+    crate::secrets::delete(TOKEN_SERVICE, id);
 }
 
 fn config_path(app: &AppHandle) -> Result<PathBuf> {

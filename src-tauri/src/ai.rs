@@ -70,27 +70,18 @@ impl AiProvider {
 /// Keychain service under which provider API keys are stored.
 const KEY_SERVICE: &str = "app.plumb.desktop.ai";
 
-fn key_entry(provider_id: &str) -> Result<keyring::Entry> {
-    keyring::Entry::new(KEY_SERVICE, provider_id)
-        .map_err(|e| AiError::Msg(format!("Keychain error: {e}")))
-}
-
 fn store_key(provider_id: &str, key: &str) -> Result<()> {
-    key_entry(provider_id)?
-        .set_password(key)
-        .map_err(|e| AiError::Msg(format!("Couldn't save key to Keychain: {e}")))
+    crate::secrets::store(KEY_SERVICE, provider_id, key)
+        .map_err(|e| AiError::Msg(format!("Couldn't save key: {e}")))
 }
 
 fn read_key(provider_id: &str) -> Result<String> {
-    key_entry(provider_id)?.get_password().map_err(|_| {
-        AiError::Msg("No API key found in the Keychain for this provider.".into())
-    })
+    crate::secrets::read(KEY_SERVICE, provider_id)
+        .map_err(|_| AiError::Msg("No API key found for this provider.".into()))
 }
 
 fn delete_key(provider_id: &str) {
-    if let Ok(entry) = key_entry(provider_id) {
-        let _ = entry.delete_credential();
-    }
+    crate::secrets::delete(KEY_SERVICE, provider_id);
 }
 
 #[derive(Serialize, Deserialize, Default)]

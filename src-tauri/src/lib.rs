@@ -1,6 +1,7 @@
 mod accounts;
 mod ai;
 mod git;
+mod secrets;
 mod serve;
 mod watcher;
 
