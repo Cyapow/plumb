@@ -1174,23 +1174,6 @@ async function newBranchPrompt() {
 // Dropdown on the toolbar branch chip: switch between local branches and
 // create a new one — the only branch UI a repo with no commits (or no
 // visible Branches section) can reach.
-function branchChipMenu(e: MouseEvent) {
-  if (!repo.value) return;
-  const items: MenuItem[] = [{ label: "New branch…", action: newBranchPrompt }];
-  if (localBranches.value.length) {
-    items.push({ separator: true, label: "" });
-    for (const b of localBranches.value) {
-      items.push({
-        label: b.name,
-        checked: b.is_head,
-        disabled: b.is_head,
-        action: () => checkout(b.name),
-      });
-    }
-  }
-  openContextMenu(e, items);
-}
-
 function stashMenu(e: MouseEvent, s: StashEntry) {
   if (!repo.value) return;
   const path = repo.value.path;
@@ -1292,24 +1275,6 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
 
     <!-- ── Repo toolbar (workspace only) ────────────────────────────── -->
     <header v-if="showWorkspace && repo" class="toolbar">
-      <button class="pill repo-switcher" title="Open another repository" @click="chooseRepo">
-        <PlumbMark :size="16" />
-        <span class="repo-name">{{ repo.name }}</span>
-        <span class="caret">▾</span>
-      </button>
-
-      <button class="pill branch-chip" title="Switch or create branch" @click="branchChipMenu">
-          <span class="dot" :style="{ background: 'var(--accent)' }"></span>
-          <span class="mono">{{ headBranch }}</span>
-          <span class="caret">▾</span>
-        </button>
-
-        <div class="divergence mono" v-if="headInfo">
-          <span>↑ {{ headInfo.ahead }}</span><span>↓ {{ headInfo.behind }}</span>
-        </div>
-
-        <div class="vsep"></div>
-
         <div class="undo-redo">
           <button class="icon-btn" :disabled="!undoOp" @click="undo" title="Undo last commit">↺</button>
           <button class="icon-btn" :disabled="!redoOp" @click="redo" title="Redo">↻</button>

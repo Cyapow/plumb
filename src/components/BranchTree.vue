@@ -30,8 +30,15 @@ const pad = (depth: number) => `${(depth ?? 0) * 14 + 12}px`;
       @dblclick="!node.branch.is_head && actions.checkout(node.branch.name)"
       @contextmenu="actions.menu($event, node.branch)"
     >
-      <span class="dot" :style="{ background: actions.colorFor(node.branch.name) }"></span>
       <span class="ellipsis">{{ node.name }}</span>
+      <span
+        v-if="node.branch.upstream && (node.branch.ahead || node.branch.behind)"
+        class="ab mono"
+        :title="`${node.branch.ahead} ahead, ${node.branch.behind} behind ${node.branch.upstream}`"
+      >
+        <span v-if="node.branch.ahead" class="ah">↑{{ node.branch.ahead }}</span>
+        <span v-if="node.branch.behind" class="bh">↓{{ node.branch.behind }}</span>
+      </span>
       <span v-if="node.branch.is_head" class="head-tag mono">HEAD</span>
     </div>
     <template v-else>
@@ -57,9 +64,11 @@ const pad = (depth: number) => `${(depth ?? 0) * 14 + 12}px`;
 }
 .row:hover { background: color-mix(in srgb, var(--raised) 55%, transparent); }
 .row.leaf.head { color: var(--text); font-weight: 500; }
-.row .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dot { width: 8px; height: 8px; flex: none; }
+.row .ellipsis { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chev { width: 10px; flex: none; color: var(--text-faint); font-size: 9px; }
 .folder { color: var(--text-dim); }
-.head-tag { margin-left: auto; font-size: 9.5px; font-weight: 700; background: var(--accent); color: var(--accent-on); padding: 1px 4px; flex: none; }
+.ab { flex: none; display: flex; gap: 5px; font-size: 10px; }
+.ab .ah { color: var(--lane-3); }
+.ab .bh { color: var(--accent); }
+.head-tag { font-size: 9.5px; font-weight: 700; background: var(--accent); color: var(--accent-on); padding: 1px 4px; flex: none; }
 </style>
