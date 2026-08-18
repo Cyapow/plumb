@@ -2,7 +2,7 @@
 // Manage GitHub / GitLab / Azure DevOps accounts (multiple each, incl.
 // self-managed). Tokens are validated on connect and stored in the OS keychain.
 import { computed, onMounted, ref } from "vue";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "../lib/native";
 import {
   connectAccount,
   removeConnection,

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Unified pull request (GitHub) / merge request (GitLab) list for the open repo.
 import { computed, ref, watch } from "vue";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "../lib/native";
 import { listPullRequests, type PrList, type PullRequest } from "../lib/accounts";
 import { openSettings } from "../lib/ui";
 import { relativeTime } from "../lib/format";

@@ -320,6 +320,37 @@ fn handle(app: &AppHandle, ctx: &Ctx, mut req: tiny_http::Request) {
     }
 }
 
+/// Open a URL/path in the OS default handler, or reveal a file in the file
+/// manager — run on the agent's (i.e. the user's) machine, so served-mode
+/// "open link" / "reveal in Finder" work like the desktop app.
+fn os_open(target: &str, reveal: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        let mut c = std::process::Command::new("open");
+        if reveal {
+            c.arg("-R");
+        }
+        let _ = c.arg(target).spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if reveal {
+            let _ = std::process::Command::new("explorer").arg(format!("/select,{target}")).spawn();
+        } else {
+            let _ = std::process::Command::new("cmd").args(["/C", "start", "", target]).spawn();
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let t = if reveal {
+            std::path::Path::new(target).parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| target.to_string())
+        } else {
+            target.to_string()
+        };
+        let _ = std::process::Command::new("xdg-open").arg(t).spawn();
+    }
+}
+
 /// Serialize any command `Result` for the wire.
 fn ok<T: serde::Serialize, E: std::fmt::Display>(r: std::result::Result<T, E>) -> Result<Value, String> {
     r.map_err(|x| x.to_string())
@@ -539,6 +570,16 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, Strin
         "pipeline_detail" => ok(block_on(accounts::pipeline_detail(app.clone(), s("repoPath"), s("sha")))),
         "pipeline_action" => ok(block_on(accounts::pipeline_action(app.clone(), s("repoPath"), s("id"), s("action")))),
         "job_log" => ok(block_on(accounts::job_log(app.clone(), s("repoPath"), s("jobId")))),
+
+        // ── Native capability bridge (served-mode only) ──
+        "open_url" => {
+            os_open(&s("url"), false);
+            okv(Value::Null)
+        }
+        "reveal_path" => {
+            os_open(&s("path"), true);
+            okv(Value::Null)
+        }
 
         other => Err(format!("command '{other}' is not exposed over plumb serve yet")),
     }
