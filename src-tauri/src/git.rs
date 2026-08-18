@@ -2858,4 +2858,91 @@ mod tests {
         assert_eq!(commits[0].summary, "first");
         assert!(!reflog(p(&d)).unwrap().is_empty());
     }
+
+    // ── Integration helpers for merge / rebase / stash flows ──
+    fn setup(d: &TempDir) -> git2::Repository {
+        init_repo(p(d), Some("main".into())).unwrap();
+        let repo = git2::Repository::open(d.path()).unwrap();
+        let mut c = repo.config().unwrap();
+        c.set_str("user.name", "T").unwrap();
+        c.set_str("user.email", "t@t.co").unwrap();
+        repo
+    }
+    // Opens a fresh handle each call — reusing one across external checkouts
+    // leaves a stale cached HEAD and commits land on the wrong branch.
+    fn commit_file(d: &TempDir, file: &str, content: &str, msg: &str) {
+        let repo = git2::Repository::open(d.path()).unwrap();
+        std::fs::write(d.path().join(file), content).unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new(file)).unwrap();
+        idx.write().unwrap();
+        let tree = repo.find_tree(idx.write_tree().unwrap()).unwrap();
+        let sig = repo.signature().unwrap();
+        let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+        let parents: Vec<&git2::Commit> = parent.iter().collect();
+        repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &parents).unwrap();
+    }
+    fn block<F: std::future::Future>(f: F) -> F::Output {
+        tauri::async_runtime::block_on(f)
+    }
+
+    #[test]
+    fn merge_no_ff_creates_merge_commit() {
+        let d = tmp();
+        setup(&d);
+        commit_file(&d, "a.txt", "1", "first");
+        block(create_branch(p(&d), "feature".into(), "HEAD".into(), true)).unwrap();
+        commit_file(&d, "b.txt", "2", "feature work");
+        block(checkout_branch(p(&d), "main".into())).unwrap();
+        block(merge_branch_ex(p(&d), "feature".into(), false, true, false, false, false)).unwrap();
+
+        let commits = list_commits(p(&d), Some(10), None).unwrap();
+        assert!(commits.iter().any(|c| c.summary == "feature work"));
+        assert!(commits.iter().any(|c| c.is_merge), "no-ff should record a merge commit");
+    }
+
+    #[test]
+    fn rebase_replays_onto_target() {
+        let d = tmp();
+        setup(&d);
+        commit_file(&d, "a.txt", "base", "base");
+        block(create_branch(p(&d), "feature".into(), "HEAD".into(), true)).unwrap();
+        commit_file(&d, "f.txt", "feat", "feature commit");
+        block(checkout_branch(p(&d), "main".into())).unwrap();
+        commit_file(&d, "m.txt", "main", "main commit");
+        block(checkout_branch(p(&d), "feature".into())).unwrap();
+        block(rebase_branch_ex(p(&d), "main".into(), false, false)).unwrap();
+
+        // After rebasing feature onto main, both commits are in feature's history.
+        let summaries: Vec<String> = list_commits(p(&d), Some(20), None).unwrap().into_iter().map(|c| c.summary).collect();
+        assert!(summaries.contains(&"feature commit".to_string()));
+        assert!(summaries.contains(&"main commit".to_string()));
+    }
+
+    #[test]
+    fn conflicting_merge_reports_conflict() {
+        let d = tmp();
+        setup(&d);
+        commit_file(&d, "a.txt", "base\n", "base");
+        block(create_branch(p(&d), "feature".into(), "HEAD".into(), true)).unwrap();
+        commit_file(&d, "a.txt", "feature\n", "feature edit");
+        block(checkout_branch(p(&d), "main".into())).unwrap();
+        commit_file(&d, "a.txt", "main\n", "main edit");
+        // Best-effort: a conflicting merge leaves the repo mid-merge.
+        let _ = block(merge_branch_ex(p(&d), "feature".into(), false, false, false, false, false));
+        assert!(!list_conflicts(p(&d)).unwrap().is_empty(), "expected a conflicted path");
+    }
+
+    #[test]
+    fn stash_save_and_apply_roundtrip() {
+        let d = tmp();
+        setup(&d);
+        commit_file(&d, "a.txt", "base", "base");
+        std::fs::write(d.path().join("a.txt"), "dirty").unwrap();
+        block(stash_save_ex(p(&d), Some("wip".into()), false, false)).unwrap();
+        assert_eq!(std::fs::read_to_string(d.path().join("a.txt")).unwrap(), "base");
+        assert_eq!(list_stashes(p(&d)).unwrap().len(), 1);
+        block(stash_apply_ex(p(&d), 0, false, false)).unwrap();
+        assert_eq!(std::fs::read_to_string(d.path().join("a.txt")).unwrap(), "dirty");
+    }
 }
