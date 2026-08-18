@@ -8,9 +8,21 @@
 //! loopback / webview origins. Event streaming over WebSocket lands next.
 
 use serde_json::{json, Value};
-use tauri::AppHandle;
+use std::collections::HashMap;
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, Listener, Manager};
 
-use crate::{accounts, git};
+use crate::{accounts, git, watcher};
+
+/// One long-poll subscriber. Events queue in the channel between polls so none
+/// are lost; `last` drives idle cleanup.
+struct ClientState {
+    tx: mpsc::Sender<Value>,
+    rx: Mutex<mpsc::Receiver<Value>>,
+    last: Mutex<Instant>,
+}
+type Clients = Arc<Mutex<HashMap<String, Arc<ClientState>>>>;
 
 /// The built frontend, embedded so `plumb serve` can host the app itself — the
 /// browser tab / editor webview loads it straight from the server, no dev server.
@@ -21,6 +33,7 @@ struct Ctx {
     token: String,
     port: u16,
     repo: Option<String>,
+    clients: Clients,
 }
 
 /// Random hex token minted per server session.
@@ -45,7 +58,32 @@ pub fn start(app: AppHandle, repo: Option<String>) {
     println!("PLUMB_SERVE port={port} token={token}");
     let _ = std::io::Write::flush(&mut std::io::stdout());
 
-    let ctx = std::sync::Arc::new(Ctx { token, port, repo });
+    // Forward the events the app emits into every subscriber's queue.
+    let clients: Clients = Default::default();
+    for name in ["repo-changed", "ai-explain-chunk", "menu-action"] {
+        let subs = clients.clone();
+        app.listen(name, move |event| {
+            let payload: Value = serde_json::from_str(event.payload()).unwrap_or(Value::Null);
+            let msg = json!({ "event": name, "payload": payload });
+            if let Ok(map) = subs.lock() {
+                for c in map.values() {
+                    let _ = c.tx.send(msg.clone());
+                }
+            }
+        });
+    }
+    // Prune subscribers that stopped polling.
+    {
+        let subs = clients.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(30));
+            if let Ok(mut map) = subs.lock() {
+                map.retain(|_, c| c.last.lock().map(|t| t.elapsed() < Duration::from_secs(90)).unwrap_or(false));
+            }
+        });
+    }
+
+    let ctx = std::sync::Arc::new(Ctx { token, port, repo, clients });
     // One thread per request: the frontend fires many commands at once, and a
     // single slow one (e.g. a network call) must not stall the others.
     let server = std::sync::Arc::new(server);
@@ -159,7 +197,47 @@ fn handle(app: &AppHandle, ctx: &Ctx, mut req: tiny_http::Request) {
     if req.method() == &tiny_http::Method::Options {
         return respond(req, 204, json!({}), cors);
     }
-    // Any GET is a request for the embedded frontend.
+    // Event stream via long-poll: block up to 25s for queued events, return
+    // them, and the client immediately re-polls. Token + client id come as query
+    // params (fetch could set headers, but this keeps the client trivial;
+    // loopback + Host checks keep it local-only).
+    if req.method() == &tiny_http::Method::Get && req.url().split('?').next() == Some("/events") {
+        let query = req.url().splitn(2, '?').nth(1).unwrap_or("").to_string();
+        let param = |k: &str| query.split('&').find_map(|kv| kv.strip_prefix(&format!("{k}="))).unwrap_or("").to_string();
+        if param("token") != ctx.token {
+            return respond(req, 401, json!({ "error": "unauthorized" }), cors);
+        }
+        let id = param("id");
+        if id.is_empty() {
+            return respond(req, 400, json!({ "error": "missing client id" }), cors);
+        }
+        let state = {
+            let mut map = match ctx.clients.lock() {
+                Ok(m) => m,
+                Err(_) => return respond(req, 500, json!({ "error": "server busy" }), cors),
+            };
+            map.entry(id)
+                .or_insert_with(|| {
+                    let (tx, rx) = mpsc::channel::<Value>();
+                    Arc::new(ClientState { tx, rx: Mutex::new(rx), last: Mutex::new(Instant::now()) })
+                })
+                .clone()
+        };
+        if let Ok(mut t) = state.last.lock() {
+            *t = Instant::now();
+        }
+        let mut events: Vec<Value> = Vec::new();
+        if let Ok(rx) = state.rx.lock() {
+            if let Ok(first) = rx.recv_timeout(Duration::from_secs(25)) {
+                events.push(first);
+                while let Ok(e) = rx.try_recv() {
+                    events.push(e);
+                }
+            }
+        }
+        return respond(req, 200, json!({ "events": events }), cors);
+    }
+    // Any other GET is a request for the embedded frontend.
     if req.method() == &tiny_http::Method::Get {
         return serve_static(req, ctx, cors);
     }
@@ -283,6 +361,9 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, Strin
         "stash_apply_ex" => ok(tauri::async_runtime::block_on(git::stash_apply_ex(s("path"), uz("index"), b("pop"), b("restoreIndex")))),
         "stash_pop" => ok(tauri::async_runtime::block_on(git::stash_pop(s("path"), uz("index")))),
         "stash_drop" => ok(git::stash_drop(s("path"), uz("index"))),
+
+        // ── Watcher (drives repo-changed → SSE auto-refresh) ──
+        "watch_repo" => ok(watcher::watch_repo(app.clone(), app.state(), s("path"))),
 
         // ── Accounts (need AppHandle) ──
         "list_connections" => ok(accounts::list_connections(app.clone())),
