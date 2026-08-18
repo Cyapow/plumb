@@ -1,0 +1,18 @@
+<idea-plugin>
+    <id>com.plumb.jetbrains</id>
+    <name>Plumb</name>
+    <vendor url="https://github.com/Cyapow/plumb">Cyapow</vendor>
+    <description><![CDATA[
+        Open the current project in the <b>Plumb</b> Git client, hosted in a tool window.
+        Backed by a shared local <code>plumb serve</code> agent (reused across projects/windows,
+        started automatically if not running). Requires a Plumb build that supports serve mode
+        (v0.10.7+).
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="Plumb" anchor="right" factoryClass="com.plumb.PlumbToolWindowFactory"
+                    icon="AllIcons.Vcs.Branch"/>
+    </extensions>
+</idea-plugin>
