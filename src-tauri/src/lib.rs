@@ -118,10 +118,43 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     Ok(())
 }
 
+/// A repository path Plumb was launched with (CLI arg or editor integration),
+/// handed to the frontend once on startup.
+struct LaunchPath(std::sync::Mutex<Option<String>>);
+
+/// Take (and clear) the path Plumb was opened with, if any.
+#[tauri::command]
+fn initial_path(state: tauri::State<LaunchPath>) -> Option<String> {
+    state.0.lock().ok().and_then(|mut g| g.take())
+}
+
+/// The first non-flag CLI argument, if it's an existing directory (a repo to open).
+fn arg_repo_path(args: &[String]) -> Option<String> {
+    args.iter()
+        .skip(1)
+        .find(|a| !a.starts_with('-'))
+        .and_then(|p| std::fs::canonicalize(p).ok())
+        .filter(|p| p.is_dir())
+        .map(|p| p.to_string_lossy().to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let launched = arg_repo_path(&std::env::args().collect::<Vec<_>>());
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
+        // Single-instance must be first: a second `plumb <path>` invocation
+        // forwards its path to the running window instead of opening anew.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            use tauri::{Emitter, Manager};
+            if let Some(path) = arg_repo_path(&argv) {
+                let _ = app.emit("open-path", path);
+            }
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.set_focus();
+            }
+        }))
+        .manage(LaunchPath(std::sync::Mutex::new(launched)))
         .manage(watcher::WatchState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -153,6 +186,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            initial_path,
             git::open_repo,
             git::is_repo,
             git::init_repo,

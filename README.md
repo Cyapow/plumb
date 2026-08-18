@@ -89,6 +89,24 @@ OAuth app once and paste its public client ID:
 - **GitHub:** create an OAuth App, enable *Device Flow*.
 - **GitLab:** create an Application with redirect URI `http://127.0.0.1:47823/callback`, scope `api`.
 
+## Editor / CLI integration
+
+Plumb can be opened at a repo from the terminal or your editor. It's
+single-instance, so a second launch focuses the running window and switches to
+the repo.
+
+**CLI** — `plumb [path]` opens a repository (defaults to the current directory):
+- *Linux:* the `.deb` installs `plumb` on your `PATH` — just run `plumb .`.
+- *macOS:* install the shim once — `install -m 0755 scripts/plumb /usr/local/bin/plumb` — then `plumb .`.
+- *Windows:* add the install directory to `PATH`, then `plumb .`.
+
+**VS Code** — the extension in [`editors/vscode`](editors/vscode) adds an
+**Open in Plumb** command (Command Palette, SCM title bar, Explorer right-click).
+See its README to build/install.
+
+**JetBrains** — add an External Tool: Program = the Plumb binary (or the `plumb`
+shim), Arguments = `$ProjectFileDir$`.
+
 ## Architecture
 
 - **Frontend:** Vue 3 + TypeScript (Vite). Design system in `src/styles/`.
