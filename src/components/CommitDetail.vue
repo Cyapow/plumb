@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // Right-dock panel for a selected history commit: metadata + changed-file list.
 // Clicking a file opens the full-screen diff (list docked on the right).
-import { ref, watch } from "vue";
+import { onUnmounted, ref, watch } from "vue";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { commitDetails, commitFileDiff, type CommitDetail } from "../lib/git";
 import { explainDiff } from "../lib/ai";
 import { initials } from "../lib/format";
@@ -16,11 +17,13 @@ const detail = ref<CommitDetail | null>(null);
 const explaining = ref(false);
 const explanation = ref<string | null>(null);
 const explainErr = ref<string | null>(null);
+let unlistenChunk: UnlistenFn | undefined;
 
 watch(
   () => [props.commitId, props.repoPath] as const,
   async () => {
     detail.value = null;
+    unlistenChunk?.();
     explanation.value = null;
     explainErr.value = null;
     explaining.value = false;
@@ -38,15 +41,24 @@ async function explain() {
   if (!props.commitId) return;
   explaining.value = true;
   explainErr.value = null;
-  explanation.value = null;
+  explanation.value = ""; // fills in live from streamed chunks
+  unlistenChunk?.();
+  unlistenChunk = await listen<string>("ai-explain-chunk", (e) => {
+    explanation.value = (explanation.value ?? "") + e.payload;
+  });
   try {
-    explanation.value = await explainDiff(props.repoPath, props.commitId);
+    const full = await explainDiff(props.repoPath, props.commitId);
+    explanation.value = full;
   } catch (e) {
     explainErr.value = String(e);
+    explanation.value = null;
   } finally {
     explaining.value = false;
+    unlistenChunk?.();
+    unlistenChunk = undefined;
   }
 }
+onUnmounted(() => unlistenChunk?.());
 
 function openFile(file: string) {
   if (!detail.value || !props.commitId) return;
@@ -103,7 +115,7 @@ function fmtDate(unix: number): string {
           {{ explaining ? "Explaining…" : explanation ? "Re-explain" : "Explain this commit" }}
         </button>
         <div v-if="explainErr" class="explain-err mono">{{ explainErr }}</div>
-        <div v-if="explanation" class="explain-out">{{ explanation }}</div>
+        <div v-if="explanation" class="explain-out">{{ explanation }}<span v-if="explaining" class="cursor">▍</span></div>
       </div>
 
       <div class="files-label section-label">
@@ -183,6 +195,8 @@ function fmtDate(unix: number): string {
   font-size: 12px; color: var(--text); line-height: 1.6; white-space: pre-wrap;
   user-select: text;
 }
+.cursor { color: var(--accent); animation: blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
 
 .files-label {
   display: flex; align-items: center; gap: var(--space-2);
