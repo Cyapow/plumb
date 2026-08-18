@@ -100,12 +100,17 @@ the repo.
 - *macOS:* install the shim once — `install -m 0755 scripts/plumb /usr/local/bin/plumb` — then `plumb .`.
 - *Windows:* add the install directory to `PATH`, then `plumb .`.
 
-**VS Code** — the extension in [`editors/vscode`](editors/vscode) adds an
-**Open in Plumb** command (Command Palette, SCM title bar, Explorer right-click).
-See its README to build/install.
+Both editors can host Plumb **inside the IDE** as a panel, backed by a shared
+local `plumb serve` agent (started/reused automatically):
 
-**JetBrains** — add an External Tool: Program = the Plumb binary (or the `plumb`
-shim), Arguments = `$ProjectFileDir$`.
+**VS Code** — the extension in [`editors/vscode`](editors/vscode): **Open Plumb
+Panel** hosts the UI in an editor tab (or **Open in Plumb (desktop)** to launch
+the app). See its README to build/install.
+
+**JetBrains** — the plugin in [`editors/jetbrains`](editors/jetbrains) adds a
+**Plumb** tool window (JCEF). See its README to build/install. (Or, without the
+plugin, add an External Tool: Program = the Plumb binary, Arguments =
+`$ProjectFileDir$`.)
 
 ## Architecture
 
