@@ -250,9 +250,10 @@ pub fn open_repo(path: String) -> Result<RepoInfo> {
 
 /// Walk history across all local and remote branches, newest first.
 #[tauri::command]
-pub fn list_commits(path: String, limit: Option<usize>) -> Result<Vec<CommitRow>> {
+pub fn list_commits(path: String, limit: Option<usize>, skip: Option<usize>) -> Result<Vec<CommitRow>> {
     let repo = open(&path)?;
     let limit = limit.unwrap_or(500);
+    let skip = skip.unwrap_or(0);
 
     let ref_map = build_ref_map(&repo);
 
@@ -266,7 +267,7 @@ pub fn list_commits(path: String, limit: Option<usize>) -> Result<Vec<CommitRow>
     let _ = walk.push_head();
 
     let mut rows = Vec::new();
-    for oid in walk.flatten().take(limit) {
+    for oid in walk.flatten().skip(skip).take(limit) {
         let commit = match repo.find_commit(oid) {
             Ok(c) => c,
             Err(_) => continue,
@@ -2852,7 +2853,7 @@ mod tests {
         let sig = repo.signature().unwrap();
         repo.commit(Some("HEAD"), &sig, &sig, "first", &tree, &[]).unwrap();
 
-        let commits = list_commits(p(&d), Some(10)).unwrap();
+        let commits = list_commits(p(&d), Some(10), None).unwrap();
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].summary, "first");
         assert!(!reflog(p(&d)).unwrap().is_empty());

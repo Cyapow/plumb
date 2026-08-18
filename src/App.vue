@@ -123,6 +123,31 @@ import { loadRecents, saveRecents, type RecentRepo } from "./lib/recents";
 
 const repo = ref<RepoInfo | null>(null);
 const commits = ref<CommitRow[]>([]);
+// History pages in from newest; more loads as you scroll toward the bottom, so
+// history reaches the first commit without rendering every row up front.
+const COMMIT_PAGE = 500;
+const allCommitsLoaded = ref(false);
+const loadingMore = ref(false);
+async function loadMoreCommits() {
+  if (!repo.value || loadingMore.value || allCommitsLoaded.value || commitFilter.value) return;
+  loadingMore.value = true;
+  try {
+    const next = await listCommits(repo.value.path, COMMIT_PAGE, commits.value.length);
+    if (next.length < COMMIT_PAGE) allCommitsLoaded.value = true;
+    if (next.length) {
+      const seen = new Set(commits.value.map((c) => c.id));
+      commits.value = commits.value.concat(next.filter((c) => !seen.has(c.id)));
+    }
+  } catch {
+    /* leave what we have */
+  } finally {
+    loadingMore.value = false;
+  }
+}
+function onHistScroll(e: Event) {
+  const el = e.target as HTMLElement;
+  if (el.scrollHeight - el.scrollTop - el.clientHeight < 600) loadMoreCommits();
+}
 const branches = ref<BranchInfo[]>([]);
 const status = ref<StatusEntry[]>([]);
 const selected = ref<string | null>(null);
@@ -494,6 +519,46 @@ function onScopeChange() {
 
 const laneColor = (i: number) => `var(--lane-${i % 7})`;
 
+// Text gutter reserved for the commit graph. Tracks the graph's real pixel
+// width (reported by CommitGraph) so lanes never overlap the message text;
+// collapses to the base width when filtering (graph hidden).
+const graphWidth = ref(0);
+const graphGutter = computed(() => (commitFilter.value ? "130px" : `${Math.max(130, graphWidth.value + 22)}px`));
+
+// History columns: resizable widths + which are shown. Persisted per install.
+interface HistCols { author: number; hash: number; when: number; showAuthor: boolean; showHash: boolean; showWhen: boolean }
+const HIST_COLS_LS = "plumb.hist.cols";
+const histCols = reactive<HistCols>({
+  author: 160, hash: 92, when: 84, showAuthor: true, showHash: true, showWhen: true,
+  ...(() => { try { return JSON.parse(localStorage.getItem(HIST_COLS_LS) || "{}"); } catch { return {}; } })(),
+});
+watch(histCols, () => localStorage.setItem(HIST_COLS_LS, JSON.stringify(histCols)), { deep: true });
+const histGrid = computed(() => {
+  const parts = ["var(--graph-gutter, 130px)", "minmax(140px, 1fr)"];
+  if (histCols.showAuthor) parts.push(`${histCols.author}px`);
+  if (histCols.showHash) parts.push(`${histCols.hash}px`);
+  if (histCols.showWhen) parts.push(`${histCols.when}px`);
+  return parts.join(" ");
+});
+// Drag a column's right edge to resize.
+function startColResize(col: "author" | "hash" | "when", e: PointerEvent) {
+  e.preventDefault();
+  const startX = e.clientX;
+  const startW = histCols[col];
+  const move = (m: PointerEvent) => { histCols[col] = Math.max(56, startW + (m.clientX - startX)); };
+  const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+}
+// Column visibility picker.
+function histColsMenu(e: MouseEvent) {
+  const item = (label: string, key: "showAuthor" | "showHash" | "showWhen") => ({
+    label: `${histCols[key] ? "✓ " : "   "}${label}`,
+    action: () => (histCols[key] = !histCols[key]),
+  });
+  openContextMenu(e, [item("Author", "showAuthor"), item("Hash", "showHash"), item("When", "showWhen")]);
+}
+
 // Sidebar filter — narrows branches, remotes, stashes and tags at once.
 const sideFilter = ref("");
 const sideMatch = (s: string) => s.toLowerCase().includes(sideFilter.value.trim().toLowerCase());
@@ -573,6 +638,7 @@ async function loadRepo(path: string) {
       workingStatus(repo.value.path),
     ]);
     commits.value = c;
+    allCommitsLoaded.value = c.length < COMMIT_PAGE;
     branches.value = b;
     status.value = s;
     selected.value = null; // nothing highlighted until the user clicks
@@ -604,6 +670,7 @@ async function refresh() {
     workingStatus(path),
   ]);
   commits.value = c;
+  allCommitsLoaded.value = c.length < COMMIT_PAGE;
   branches.value = b;
   status.value = s;
   loadExtras(path);
@@ -1480,17 +1547,18 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           </div>
         </div>
 
-        <div v-else class="hist-list">
+        <div v-else class="hist-list" :style="{ '--graph-gutter': graphGutter, '--hist-cols': histGrid }">
           <div class="hist-head mono">
             <span class="col-graph">GRAPH</span>
-            <span>COMMIT</span>
-            <span>AUTHOR</span>
-            <span>HASH</span>
-            <span class="col-when">WHEN</span>
+            <span class="hh-col">COMMIT</span>
+            <span v-if="histCols.showAuthor" class="hh-col">AUTHOR<span class="col-grip" @pointerdown="startColResize('author', $event)"></span></span>
+            <span v-if="histCols.showHash" class="hh-col">HASH<span class="col-grip" @pointerdown="startColResize('hash', $event)"></span></span>
+            <span v-if="histCols.showWhen" class="col-when hh-col">WHEN</span>
+            <button class="cols-btn" title="Show/hide columns" @click="histColsMenu">⋯</button>
           </div>
 
-          <div class="hist-body">
-            <div v-if="!commitFilter" class="graph-col"><CommitGraph :commits="commits" /></div>
+          <div class="hist-body" @scroll="onHistScroll">
+            <div v-if="!commitFilter" class="graph-col"><CommitGraph :commits="commits" @width="graphWidth = $event" /></div>
 
             <div class="rows" :class="{ filtered: commitFilter }">
             <div
@@ -1521,12 +1589,12 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
                 >
                 <span class="summary" :class="{ merge: c.is_merge }">{{ c.summary }}</span>
               </div>
-              <div class="cell-author">
+              <div v-if="histCols.showAuthor" class="cell-author">
                 <span class="avatar mono">{{ initials(c.author_name) }}</span>
                 <span class="ellipsis author-name">{{ c.author_name }}</span>
               </div>
-              <span class="cell-hash mono">{{ c.short_id }}</span>
-              <span class="cell-when">{{ relativeTime(c.time) }}</span>
+              <span v-if="histCols.showHash" class="cell-hash mono">{{ c.short_id }}</span>
+              <span v-if="histCols.showWhen" class="cell-when">{{ relativeTime(c.time) }}</span>
             </div>
             </div>
           </div>
@@ -1928,20 +1996,26 @@ kbd {
 .re-actions .btn { height: 36px; padding: 0 16px; background: var(--raised); border: 1px solid var(--line); font-size: 12.5px; cursor: pointer; }
 .hist-list { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .hist-head {
+  position: relative;
   height: 28px;
   flex: none;
   display: grid;
-  grid-template-columns: 130px 1fr 160px 92px 84px;
+  grid-template-columns: var(--hist-cols);
   align-items: center;
   background: var(--subtle);
   border-bottom: 1px solid var(--line);
   font-size: 10px;
   letter-spacing: 0.1em;
   color: var(--text-faint);
-  padding-right: var(--space-4);
+  padding-right: 22px;
 }
 .hist-head .col-graph { padding-left: var(--space-3); }
 .hist-head .col-when { text-align: right; }
+.hist-head .hh-col { position: relative; }
+.col-grip { position: absolute; top: -6px; right: -4px; width: 9px; height: 28px; cursor: col-resize; }
+.col-grip::after { content: ""; position: absolute; left: 4px; top: 7px; width: 1px; height: 14px; background: var(--line); }
+.col-grip:hover::after { background: var(--accent); }
+.cols-btn { position: absolute; top: 3px; right: 4px; width: 18px; height: 20px; background: var(--raised); border: 1px solid var(--line); color: var(--text-dim); font-size: 12px; line-height: 1; cursor: pointer; }
 
 .hist-body { position: relative; flex: 1; overflow-y: auto; }
 .graph-col { position: absolute; left: 12px; top: 0; pointer-events: none; z-index: 1; }
@@ -1949,11 +2023,11 @@ kbd {
 .rows { position: relative; z-index: 0; }
 .commit-row {
   display: grid;
-  grid-template-columns: 130px 1fr 160px 92px 84px;
+  grid-template-columns: var(--hist-cols);
   height: var(--row-commit);
   align-items: center;
   border-bottom: 1px solid var(--line-soft);
-  padding-right: var(--space-4);
+  padding-right: 22px;
 }
 .commit-row:hover { background: color-mix(in srgb, var(--raised) 55%, transparent); }
 .commit-row.selected { background: var(--raised); box-shadow: inset 2px 0 0 var(--accent); }
