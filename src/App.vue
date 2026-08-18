@@ -67,8 +67,8 @@ import {
   type TagInfo,
   type RepoState,
 } from "./lib/git";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "./lib/transport";
+import { invoke } from "./lib/transport";
 import {
   openContextMenu,
   promptText,

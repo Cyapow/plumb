@@ -1,7 +1,7 @@
 // Typed wrappers over the Rust `git` commands. The shapes here mirror the
 // serde structs in `src-tauri/src/git.rs` exactly.
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./transport";
 
 export interface RepoInfo {
   path: string;
