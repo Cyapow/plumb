@@ -355,9 +355,17 @@ pub async fn explain_diff(
         return Err(AiError::Msg("No changes to explain.".into()));
     }
     let prompt = build_explain_prompt(&subject, &diff);
-    let out = tauri::async_runtime::spawn_blocking(move || run_provider(&provider, &prompt))
-        .await
-        .map_err(|e| AiError::Msg(e.to_string()))??;
+    // Stream tokens to the UI as "ai-explain-chunk" events; also return the full
+    // text so the caller has an authoritative final value.
+    let handle = app.clone();
+    let out = tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Emitter;
+        run_provider_stream(&provider, &prompt, &mut |chunk| {
+            let _ = handle.emit("ai-explain-chunk", chunk.to_string());
+        })
+    })
+    .await
+    .map_err(|e| AiError::Msg(e.to_string()))??;
     Ok(out.trim().to_string())
 }
 
@@ -614,6 +622,126 @@ fn openai_generate(endpoint: &str, model: &str, key: &str, prompt: &str) -> Resu
         return Err(AiError::Msg("The API returned an empty message.".into()));
     }
     Ok(text)
+}
+
+/* ── Streaming (for live "Explain") ───────────────────────────────── */
+
+/// Read an SSE body line by line, handing each `data:` payload to `on_data`
+/// (stops at `[DONE]`). Non-data lines (e.g. `event:`) are ignored.
+fn read_sse<F: FnMut(&str)>(reader: impl std::io::Read, mut on_data: F) -> Result<()> {
+    use std::io::BufRead;
+    for line in std::io::BufReader::new(reader).lines() {
+        let line = line.map_err(|e| AiError::Msg(e.to_string()))?;
+        if let Some(data) = line.strip_prefix("data:") {
+            let data = data.trim();
+            if data == "[DONE]" {
+                break;
+            }
+            if !data.is_empty() {
+                on_data(data);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn run_provider_stream(provider: &AiProvider, prompt: &str, on: &mut dyn FnMut(&str)) -> Result<String> {
+    match provider.kind.as_str() {
+        "local" => ollama_stream(&provider.endpoint, &provider.model, prompt, on),
+        "cloud" => {
+            let key = read_key(&provider.id)?;
+            match provider.vendor.as_str() {
+                "anthropic" => anthropic_stream(&provider.endpoint, &provider.model, &key, prompt, on),
+                _ => openai_stream(&provider.endpoint, &provider.model, &key, prompt, on),
+            }
+        }
+        other => Err(AiError::Msg(format!("Unknown provider type '{other}'."))),
+    }
+}
+
+fn ollama_stream(endpoint: &str, model: &str, prompt: &str, on: &mut dyn FnMut(&str)) -> Result<String> {
+    let url = format!("{}/api/generate", endpoint.trim_end_matches('/'));
+    let resp = ureq::post(&url)
+        .timeout(Duration::from_secs(300))
+        .send_json(serde_json::json!({ "model": model, "prompt": prompt, "stream": true }))
+        .map_err(|e| ureq_err("Ollama request failed", e))?;
+    let mut acc = String::new();
+    use std::io::BufRead;
+    for line in std::io::BufReader::new(resp.into_reader()).lines() {
+        let line = line.map_err(|e| AiError::Msg(e.to_string()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(j) = serde_json::from_str::<serde_json::Value>(&line) {
+            if let Some(t) = j["response"].as_str() {
+                if !t.is_empty() {
+                    acc.push_str(t);
+                    on(t);
+                }
+            }
+            if j["done"].as_bool().unwrap_or(false) {
+                break;
+            }
+        }
+    }
+    Ok(acc)
+}
+
+fn openai_stream(endpoint: &str, model: &str, key: &str, prompt: &str, on: &mut dyn FnMut(&str)) -> Result<String> {
+    let url = format!("{}/chat/completions", endpoint.trim_end_matches('/'));
+    let resp = ureq::post(&url)
+        .set("authorization", &format!("Bearer {key}"))
+        .set("content-type", "application/json")
+        .timeout(Duration::from_secs(300))
+        .send_json(serde_json::json!({
+            "model": model,
+            "messages": [{ "role": "user", "content": prompt }],
+            "temperature": 0.2,
+            "stream": true,
+        }))
+        .map_err(|e| ureq_err("OpenAI request failed", e))?;
+    let mut acc = String::new();
+    read_sse(resp.into_reader(), |data| {
+        if let Ok(j) = serde_json::from_str::<serde_json::Value>(data) {
+            if let Some(t) = j["choices"][0]["delta"]["content"].as_str() {
+                if !t.is_empty() {
+                    acc.push_str(t);
+                    on(t);
+                }
+            }
+        }
+    })?;
+    Ok(acc)
+}
+
+fn anthropic_stream(endpoint: &str, model: &str, key: &str, prompt: &str, on: &mut dyn FnMut(&str)) -> Result<String> {
+    let url = format!("{}/messages", endpoint.trim_end_matches('/'));
+    let resp = ureq::post(&url)
+        .set("x-api-key", key)
+        .set("anthropic-version", "2023-06-01")
+        .set("content-type", "application/json")
+        .timeout(Duration::from_secs(300))
+        .send_json(serde_json::json!({
+            "model": model,
+            "max_tokens": 1024,
+            "messages": [{ "role": "user", "content": prompt }],
+            "stream": true,
+        }))
+        .map_err(|e| ureq_err("Anthropic request failed", e))?;
+    let mut acc = String::new();
+    read_sse(resp.into_reader(), |data| {
+        if let Ok(j) = serde_json::from_str::<serde_json::Value>(data) {
+            if j["type"].as_str() == Some("content_block_delta") {
+                if let Some(t) = j["delta"]["text"].as_str() {
+                    if !t.is_empty() {
+                        acc.push_str(t);
+                        on(t);
+                    }
+                }
+            }
+        }
+    })?;
+    Ok(acc)
 }
 
 /* ── Model discovery ──────────────────────────────────────────────── */
