@@ -1,6 +1,7 @@
 mod accounts;
 mod ai;
 mod git;
+mod serve;
 mod watcher;
 
 use tauri::menu::{AboutMetadata, MenuBuilder, MenuItem, SubmenuBuilder};
@@ -183,6 +184,16 @@ pub fn run() {
                 use tauri::Emitter;
                 let _ = app.emit("menu-action", event.id().0.clone());
             });
+
+            // `plumb serve`: start the loopback RPC server and keep the window
+            // hidden — an embedded editor webview is the client, not this window.
+            if std::env::args().any(|a| a == "serve") {
+                use tauri::Manager;
+                serve::start(app.handle().clone());
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.hide();
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
