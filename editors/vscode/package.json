@@ -2,22 +2,50 @@
   "name": "plumb-vscode",
   "displayName": "Open in Plumb",
   "description": "Open the current workspace in the Plumb Git client.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "cyapow",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/Cyapow/plumb" },
-  "engines": { "vscode": "^1.75.0" },
-  "categories": ["SCM Providers", "Other"],
-  "activationEvents": [],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cyapow/plumb"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "SCM Providers",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
-      { "command": "plumb.openPanel", "title": "Open Plumb Panel", "category": "Plumb" },
-      { "command": "plumb.openRepo", "title": "Open in Plumb (desktop)", "category": "Plumb" }
+      {
+        "command": "plumb.openPanel",
+        "title": "Open Plumb Panel",
+        "category": "Plumb"
+      },
+      {
+        "command": "plumb.openRepo",
+        "title": "Open in Plumb (desktop)",
+        "category": "Plumb"
+      }
     ],
     "menus": {
-      "scm/title": [{ "command": "plumb.openPanel", "group": "navigation" }],
-      "explorer/context": [{ "command": "plumb.openPanel", "group": "navigation@99" }]
+      "scm/title": [
+        {
+          "command": "plumb.openPanel",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "plumb.openPanel",
+          "group": "navigation@99"
+        }
+      ]
     },
     "configuration": {
       "title": "Plumb",

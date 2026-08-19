@@ -17,6 +17,15 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("plumb.openRepo", (uri?: vscode.Uri) => launchDesktop(uri)),
     vscode.commands.registerCommand("plumb.openPanel", (uri?: vscode.Uri) => openPanel(uri)),
   );
+
+  // A one-click launcher in the status bar, so the panel opens without the
+  // Command Palette.
+  const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
+  status.text = "$(git-branch) Plumb";
+  status.tooltip = "Open the Plumb panel";
+  status.command = "plumb.openPanel";
+  status.show();
+  context.subscriptions.push(status);
 }
 
 function workspaceFolder(uri?: vscode.Uri): string | undefined {
