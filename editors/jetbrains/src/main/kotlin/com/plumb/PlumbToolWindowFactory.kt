@@ -20,8 +20,8 @@ import javax.swing.SwingConstants
  */
 class PlumbToolWindowFactory : ToolWindowFactory {
 
-    override fun isApplicable(project: Project): Boolean = JBCefApp.isSupported()
-
+    // Always register the tool window (so the stripe button appears); handle a
+    // missing JCEF inside createToolWindowContent rather than hiding silently.
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val panel = JPanel(BorderLayout())
 
