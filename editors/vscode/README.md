@@ -11,6 +11,17 @@ Two commands (Command Palette, SCM title bar, Explorer right-click):
 
 Both need a Plumb binary that supports `serve` (v0.10.7+) for the panel.
 
+## Install
+
+**From a release (no toolchain needed).** Either:
+- In the Plumb app: **Settings → Integrations → Install VS Code extension**, or
+- Download `plumb-vscode.vsix` from the
+  [latest release](https://github.com/Cyapow/plumb/releases/latest) and run
+  `code --install-extension plumb-vscode.vsix` (or Extensions view → `⋯` →
+  *Install from VSIX…*).
+
+**From source** — see *Build & install* below.
+
 ## Build & install (local)
 
 ```bash

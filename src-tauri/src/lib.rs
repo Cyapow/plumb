@@ -329,19 +329,22 @@ pub fn run() {
                 let _ = app.emit("menu-action", event.id().0.clone());
             });
 
-            // `plumb serve`: start the loopback RPC server and keep the window
-            // hidden — an embedded editor webview is the client, not this window.
-            if std::env::args().any(|a| a == "serve") {
+            // Always run the local server + menu-bar tray, so editors can connect
+            // whenever Plumb is open. `serve` mode additionally stays headless (no
+            // window, no Dock icon — a menu-bar-only agent).
+            {
                 use tauri::Manager;
-                // Menu-bar agent: no dock icon on macOS, just a tray item.
-                #[cfg(target_os = "macos")]
-                let _ = app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
+                let serve_mode = std::env::args().any(|a| a == "serve");
                 let repo = arg_repo_path(&std::env::args().collect::<Vec<_>>());
                 serve::start(app.handle().clone(), repo);
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.hide();
-                }
                 build_tray(app.handle())?;
+                if serve_mode {
+                    #[cfg(target_os = "macos")]
+                    let _ = app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
+                    if let Some(win) = app.get_webview_window("main") {
+                        let _ = win.hide();
+                    }
+                }
             }
             Ok(())
         })

@@ -157,18 +157,36 @@ function hex(v: string | undefined): string {
               <div class="row-title">Editor panel</div>
               <div class="row-sub">
                 Plumb can run inside VS Code and JetBrains as a panel, backed by a small local
-                server. Editors share one background server — the menu-bar agent — and reuse it.
+                server. Whenever Plumb is open it also runs in the menu bar, and editors share and
+                reuse that one background server.
               </div>
 
-              <div class="install-row">
-                <button class="btn-accent" :disabled="installing" @click="installVsc">
-                  <span v-if="installing" class="spinner-sm"></span>{{ installing ? "Installing…" : "Install VS Code extension" }}
-                </button>
-                <button class="btn" @click="openUrl('https://github.com/Cyapow/plumb/releases/latest')">
-                  Get the JetBrains plugin ↗
-                </button>
+              <div class="int-block">
+                <div class="int-h">VS Code</div>
+                <div class="int-p">Installs the packaged extension from the latest release via the <code>code</code> CLI. Then run <b>Plumb: Open Plumb Panel</b>.</div>
+                <div class="install-row">
+                  <button class="btn-accent" :disabled="installing" @click="installVsc">
+                    <span v-if="installing" class="spinner-sm"></span>{{ installing ? "Installing…" : "Install VS Code extension" }}
+                  </button>
+                </div>
+                <div v-if="installMsg" class="install-msg" :class="{ err: installErr }">{{ installMsg }}</div>
               </div>
-              <div v-if="installMsg" class="install-msg" :class="{ err: installErr }">{{ installMsg }}</div>
+
+              <div class="int-block">
+                <div class="int-h">JetBrains</div>
+                <div class="int-p">
+                  Download <code>plumb-jetbrains-&lt;version&gt;.zip</code> from the release, then in your IDE:
+                  <b>Settings → Plugins → ⚙ → Install Plugin from Disk…</b> and pick the zip. Open the <b>Plumb</b> tool window.
+                </div>
+                <div class="install-row">
+                  <button class="btn" @click="openUrl('https://github.com/Cyapow/plumb/releases/latest')">
+                    Download from releases ↗
+                  </button>
+                  <button class="btn" @click="openUrl('https://github.com/Cyapow/plumb/tree/main/editors/jetbrains')">
+                    Build from source ↗
+                  </button>
+                </div>
+              </div>
 
               <label class="toggle-row">
                 <input type="checkbox" :checked="autostart" @change="onAutostart(($event.target as HTMLInputElement).checked)" />
@@ -366,6 +384,10 @@ function hex(v: string | undefined): string {
 .integrations .toggle-row input { margin-top: 3px; accent-color: var(--accent); }
 .integrations .tr-title { font-size: 13px; font-weight: 600; }
 .integrations .tr-sub { font-size: 11.5px; color: var(--text-faint); margin-top: 2px; }
+.integrations .int-block { margin-top: var(--space-4); padding-top: var(--space-3); border-top: 1px solid var(--line); }
+.integrations .int-h { font-size: 12px; font-weight: 700; }
+.integrations .int-p { font-size: 11.5px; color: var(--text-dim); line-height: 1.5; margin-top: 3px; }
+.integrations .int-p code { font-size: 10.5px; background: var(--surface); border: 1px solid var(--line-soft); padding: 0 4px; }
 .integrations .install-row { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-3); }
 .integrations .btn-accent { display: inline-flex; align-items: center; gap: var(--space-2); height: 32px; padding: 0 14px; background: var(--accent); color: var(--accent-on); border: 1px solid var(--accent); font-size: 12.5px; font-weight: 700; cursor: pointer; }
 .integrations .btn-accent:disabled { opacity: 0.7; }
