@@ -17,6 +17,15 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("plumb.openRepo", (uri?: vscode.Uri) => launchDesktop(uri)),
     vscode.commands.registerCommand("plumb.openPanel", (uri?: vscode.Uri) => openPanel(uri)),
   );
+
+  // A one-click launcher in the status bar, so the panel opens without the
+  // Command Palette.
+  const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
+  status.text = "$(plumb-mark) Plumb";
+  status.tooltip = "Open the Plumb panel";
+  status.command = "plumb.openPanel";
+  status.show();
+  context.subscriptions.push(status);
 }
 
 function workspaceFolder(uri?: vscode.Uri): string | undefined {
@@ -117,7 +126,14 @@ async function ensureServer(bin: string, folder: string): Promise<number> {
   throw new Error("`plumb serve` didn't start. Set `plumb.binaryPath` to a build that supports serve mode.");
 }
 
+// One panel per window — reveal it instead of spawning duplicates.
+let currentPanel: vscode.WebviewPanel | undefined;
+
 async function openPanel(uri?: vscode.Uri) {
+  if (currentPanel) {
+    currentPanel.reveal(currentPanel.viewColumn ?? vscode.ViewColumn.Active);
+    return;
+  }
   const folder = workspaceFolder(uri);
   if (!folder) {
     vscode.window.showWarningMessage("Plumb: open a folder or workspace first.");
@@ -128,6 +144,10 @@ async function openPanel(uri?: vscode.Uri) {
   const panel = vscode.window.createWebviewPanel("plumb.panel", "Plumb", vscode.ViewColumn.Active, {
     enableScripts: true,
     retainContextWhenHidden: true,
+  });
+  currentPanel = panel;
+  panel.onDidDispose(() => {
+    if (currentPanel === panel) currentPanel = undefined;
   });
   panel.webview.html = shellHtml("Starting Plumb…", "#888");
 

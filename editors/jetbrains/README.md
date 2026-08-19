@@ -19,16 +19,24 @@ Open the **Plumb** tool window (right dock).
 
 ## Build & run
 
-Needs a JDK 17 and Gradle (or generate the wrapper once with `gradle wrapper`).
+Needs **JDK 17** (the IntelliJ Platform Gradle plugin doesn't support newer JDKs
+here). The Gradle wrapper is committed and pinned to a compatible Gradle, so a
+system Gradle isn't needed — use `./gradlew`.
 
 ```bash
 cd editors/jetbrains
-gradle runIde          # launches a sandbox IDE with the plugin loaded
-# or
-gradle buildPlugin     # produces build/distributions/plumb-jetbrains-0.1.0.zip
+# point Gradle at a JDK 17 (Homebrew example):
+export JAVA_HOME="$(brew --prefix openjdk@17)/libexec/openjdk.jdk/Contents/Home"
+
+./gradlew buildPlugin --no-daemon   # -> build/distributions/plumb-jetbrains-<version>.zip
+# or, to try it in a throwaway sandbox IDE:
+./gradlew runIde --no-daemon
 ```
 
-Install the zip via **Settings → Plugins → ⚙ → Install Plugin from Disk…**.
+Install the produced zip via **Settings → Plugins → ⚙ → Install Plugin from
+Disk…**, then restart. If you're re-installing after a change, uninstall the old
+Plumb plugin first (or bump `version` in `build.gradle.kts`) — JetBrains skips a
+same-version install.
 
 Open the **Plumb** tool window (right edge) in any project — it starts/reuses the
 agent and shows Plumb for that project.

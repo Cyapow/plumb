@@ -10,9 +10,12 @@
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
+    <!-- JCEF is a separate classloader module in recent IDEs; required for the
+         embedded browser (JBCefBrowser). -->
+    <depends>com.intellij.modules.jcef</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow id="Plumb" anchor="right" factoryClass="com.plumb.PlumbToolWindowFactory"
-                    icon="AllIcons.Vcs.Branch"/>
+                    icon="/icons/plumb.svg"/>
     </extensions>
 </idea-plugin>
