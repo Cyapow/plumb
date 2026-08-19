@@ -164,7 +164,7 @@ function hex(v: string | undefined): string {
                 <button class="btn-accent" :disabled="installing" @click="installVsc">
                   <span v-if="installing" class="spinner-sm"></span>{{ installing ? "Installing…" : "Install VS Code extension" }}
                 </button>
-                <button class="btn" @click="openUrl('https://github.com/Cyapow/plumb/tree/main/editors/jetbrains')">
+                <button class="btn" @click="openUrl('https://github.com/Cyapow/plumb/releases/latest')">
                   Get the JetBrains plugin ↗
                 </button>
               </div>
