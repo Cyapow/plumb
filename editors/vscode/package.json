@@ -2,7 +2,7 @@
   "name": "plumb-vscode",
   "displayName": "Open in Plumb",
   "description": "Open the current workspace in the Plumb Git client.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "cyapow",
   "license": "MIT",
   "repository": {
@@ -46,6 +46,15 @@
           "group": "navigation@99"
         }
       ]
+    },
+    "icons": {
+      "plumb-mark": {
+        "description": "Plumb",
+        "default": {
+          "fontPath": "media/plumb.woff",
+          "fontCharacter": "\\F101"
+        }
+      }
     },
     "configuration": {
       "title": "Plumb",
