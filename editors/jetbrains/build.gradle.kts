@@ -25,7 +25,11 @@ dependencies {
 intellijPlatform {
     pluginConfiguration {
         ideaVersion {
+            // Broad compatibility: the plugin only uses stable platform APIs
+            // (tool window + JCEF), so don't let the build cap the upper bound to
+            // the compile-time platform (which rejects newer IDEs like 2026.x).
             sinceBuild = "233"
+            untilBuild = "299.*"
         }
     }
 }
