@@ -16,6 +16,6 @@
 
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow id="Plumb" anchor="right" factoryClass="com.plumb.PlumbToolWindowFactory"
-                    icon="AllIcons.Vcs.Branch"/>
+                    icon="/icons/plumb.svg"/>
     </extensions>
 </idea-plugin>
