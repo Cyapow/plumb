@@ -100,17 +100,34 @@ the repo.
 - *macOS:* install the shim once — `install -m 0755 scripts/plumb /usr/local/bin/plumb` — then `plumb .`.
 - *Windows:* add the install directory to `PATH`, then `plumb .`.
 
+### Editor plugins
+
 Both editors can host Plumb **inside the IDE** as a panel, backed by a shared
-local `plumb serve` agent (started/reused automatically):
+local `plumb serve` agent that Plumb starts automatically (it lives in the menu
+bar whenever the app is open, and can also start at login — **Settings →
+Integrations**).
 
-**VS Code** — the extension in [`editors/vscode`](editors/vscode): **Open Plumb
-Panel** hosts the UI in an editor tab (or **Open in Plumb (desktop)** to launch
-the app). See its README to build/install.
+Every [release](https://github.com/Cyapow/plumb/releases/latest) attaches the
+pre-built plugins, so you don't need a Node / Gradle / Java toolchain:
 
-**JetBrains** — the plugin in [`editors/jetbrains`](editors/jetbrains) adds a
-**Plumb** tool window (JCEF). See its README to build/install. (Or, without the
-plugin, add an External Tool: Program = the Plumb binary, Arguments =
-`$ProjectFileDir$`.)
+**VS Code** — one of:
+- In the app: **Settings → Integrations → Install VS Code extension** (downloads
+  the `.vsix` and installs it via the `code` CLI).
+- Manually: download `plumb-vscode.vsix` from the latest release, then
+  `code --install-extension plumb-vscode.vsix` (or the Extensions view →
+  `⋯` → *Install from VSIX…*).
+- From source: see [`editors/vscode`](editors/vscode).
+
+Then run **Plumb: Open Plumb Panel** (Command Palette / SCM title / Explorer
+right-click). *Open in Plumb (desktop)* launches the app instead.
+
+**JetBrains** — one of:
+- Download `plumb-jetbrains-<version>.zip` from the latest release, then
+  **Settings → Plugins → ⚙ → Install Plugin from Disk…** and pick the zip.
+- From source: see [`editors/jetbrains`](editors/jetbrains).
+
+Then open the **Plumb** tool window (right dock). If the Plumb binary isn't at
+the default location, set the `PLUMB_BIN` environment variable to it.
 
 ## Architecture
 

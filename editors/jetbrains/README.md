@@ -7,6 +7,16 @@ running — the same discovery mechanism the VS Code extension uses.
 
 Requires a Plumb build that supports serve mode (**v0.10.7+**).
 
+## Install
+
+**From a release (no toolchain needed).** Download
+`plumb-jetbrains-<version>.zip` from the
+[latest release](https://github.com/Cyapow/plumb/releases/latest), then in your
+IDE: **Settings → Plugins → ⚙ → Install Plugin from Disk…** and pick the zip.
+Open the **Plumb** tool window (right dock).
+
+**From source** — see *Build & run* below.
+
 ## Build & run
 
 Needs a JDK 17 and Gradle (or generate the wrapper once with `gradle wrapper`).
