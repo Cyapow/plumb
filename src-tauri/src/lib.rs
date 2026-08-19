@@ -234,7 +234,7 @@ fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "tray_quit", "Quit Plumb", true, None::<&str>)?;
     let menu = MenuBuilder::new(app).items(&[&open, &quit]).build()?;
 
-    let mut builder = TrayIconBuilder::new().tooltip("Plumb — serving").title("Plumb").menu(&menu).on_menu_event(|app, event| {
+    let mut builder = TrayIconBuilder::new().tooltip("Plumb — serving").menu(&menu).on_menu_event(|app, event| {
         match event.id().0.as_str() {
             "tray_quit" => {
                 serve::clear_discovery();
