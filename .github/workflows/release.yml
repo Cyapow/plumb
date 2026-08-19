@@ -39,17 +39,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Force apt IPv4
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4 >/dev/null
       - name: Install Linux system dependencies
         if: startsWith(matrix.platform, 'ubuntu')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            librsvg2-dev \
-            libayatana-appindicator3-dev \
-            patchelf \
-            xdg-utils
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf xdg-utils
+          version: "1.0"
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -88,15 +86,48 @@ jobs:
           prerelease: false
           args: ${{ matrix.args }}
 
-      # Package the VS Code extension once (OS-agnostic) and attach it to the
-      # release, so the app can install it via Settings → Integrations.
-      - name: Package + upload VS Code extension
-        if: matrix.platform == 'ubuntu-22.04'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  # Build the editor plugins once and attach them to the release, so users can
+  # install without a local Node / Gradle / Java toolchain.
+  editors:
+    needs: release
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Package VS Code extension
         run: |
           cd editors/vscode
           npm install
           npm run compile
           npx --yes @vscode/vsce package --out plumb-vscode.vsix
-          gh release upload "${{ github.ref_name }}" plumb-vscode.vsix --clobber --repo "$GITHUB_REPOSITORY"
+
+      - name: Upload VS Code extension
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" editors/vscode/plumb-vscode.vsix --clobber --repo "$GITHUB_REPOSITORY"
+
+      - name: Build JetBrains plugin
+        continue-on-error: true
+        run: |
+          curl -sL https://services.gradle.org/distributions/gradle-8.9-bin.zip -o /tmp/gradle.zip
+          unzip -q /tmp/gradle.zip -d /opt
+          /opt/gradle-8.9/bin/gradle -p editors/jetbrains buildPlugin --no-daemon --stacktrace
+
+      - name: Upload JetBrains plugin
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          zip=$(ls editors/jetbrains/build/distributions/*.zip 2>/dev/null | head -1)
+          if [ -n "$zip" ]; then
+            gh release upload "${{ github.ref_name }}" "$zip" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            echo "No JetBrains plugin zip produced; skipping."
+          fi
