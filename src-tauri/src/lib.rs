@@ -224,10 +224,25 @@ fn arg_repo_path(args: &[String]) -> Option<String> {
         .map(|p| p.to_string_lossy().to_string())
 }
 
+/// Promote to a normal windowed app (macOS Dock icon) and show the main window.
+/// Used by the tray "Open" item and when a second launch is forwarded to a
+/// running (possibly menu-bar-only) instance.
+fn show_main<R: Runtime>(app: &AppHandle<R>) {
+    use tauri::Manager as _;
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+    }
+}
+
 /// Tray (menu-bar) icon shown in serve mode, with Open / Quit.
 fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     use tauri::menu::{MenuBuilder, MenuItem};
     use tauri::tray::TrayIconBuilder;
+    #[cfg(not(target_os = "macos"))]
     use tauri::Manager;
 
     let open = MenuItem::with_id(app, "tray_open", "Open Plumb Window", true, None::<&str>)?;
@@ -240,20 +255,23 @@ fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                 serve::clear_discovery();
                 app.exit(0);
             }
-            "tray_open" => {
-                // Promote to a normal windowed app and show the window.
-                #[cfg(target_os = "macos")]
-                let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.show();
-                    let _ = win.set_focus();
-                }
-            }
+            "tray_open" => show_main(app),
             _ => {}
         }
     });
-    if let Some(icon) = app.default_window_icon() {
-        builder = builder.icon(icon.clone());
+    // macOS: a monochrome template icon so the menu bar tints it black/white to
+    // match the wallpaper. Other platforms: the normal colored logo.
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(icon) = tauri::image::Image::from_bytes(include_bytes!("../icons/tray-template.png")) {
+            builder = builder.icon(icon).icon_as_template(true);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(icon) = app.default_window_icon() {
+            builder = builder.icon(icon.clone());
+        }
     }
     builder.build(app)?;
     Ok(())
@@ -267,13 +285,14 @@ pub fn run() {
         // Single-instance must be first: a second `plumb <path>` invocation
         // forwards its path to the running window instead of opening anew.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            use tauri::{Emitter, Manager};
+            use tauri::Emitter;
+            // A repo path forwarded from `plumb <path>` opens that repo.
             if let Some(path) = arg_repo_path(&argv) {
                 let _ = app.emit("open-path", path);
             }
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.set_focus();
-            }
+            // A plain relaunch (Spotlight / Raycast / Dock) should surface the
+            // window even if this instance is running as a menu-bar agent.
+            show_main(app);
         }))
         .manage(LaunchPath(std::sync::Mutex::new(launched)))
         .manage(watcher::WatchState::default())
