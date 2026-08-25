@@ -126,6 +126,9 @@ const commits = ref<CommitRow[]>([]);
 // History pages in from newest; more loads as you scroll toward the bottom, so
 // history reaches the first commit without rendering every row up front.
 const COMMIT_PAGE = 500;
+// First page kept small so a fresh (or switched-to) repo paints fast even when
+// it has hundreds of thousands of commits; the rest streams in behind it.
+const FIRST_PAGE = 120;
 const allCommitsLoaded = ref(false);
 const loadingMore = ref(false);
 async function loadMoreCommits() {
@@ -342,9 +345,16 @@ interface Tab {
 const tabs = ref<Tab[]>([]);
 const activePath = ref<string>(""); // "" = home screen
 const recents = ref<RecentRepo[]>(loadRecents());
-const showWorkspace = computed(
-  () => !!activePath.value && !!repo.value && repo.value.path === activePath.value,
-);
+// Home only when no tab is active. Deliberately NOT tied to repo.value
+// matching activePath: while switching to another repo the new commits load
+// asynchronously, and gating on an exact match would flash the home screen
+// (and briefly highlight the home tab) until the load finished.
+const showWorkspace = computed(() => !!activePath.value);
+// Basename of the tab being opened, for the loading placeholder.
+const activeName = computed(() => {
+  const t = tabs.value.find((t) => t.path === activePath.value);
+  return t?.name || activePath.value.split("/").filter(Boolean).pop() || "repository";
+});
 
 function pushRecent(t: RecentRepo) {
   recents.value = [t, ...recents.value.filter((r) => r.path !== t.path)].slice(0, 12);
@@ -364,15 +374,21 @@ function toggleFavorite(path: string) {
   localStorage.setItem("plumb.favorites", JSON.stringify(favorites.value));
 }
 function selectTab(path: string) {
-  if (repo.value?.path === path) {
+  if (activePath.value === path) return;
+  captureTab(); // snapshot the tab we're leaving
+  const cached = tabCache.get(path);
+  if (cached) {
+    restoreTab(cached); // instant paint from cache
     activePath.value = path;
-    return;
+    void revalidateTab(path); // then refresh quietly in place
+  } else {
+    loadRepo(path); // first visit — full load
   }
-  loadRepo(path);
 }
 function closeTab(path: string) {
   const idx = tabs.value.findIndex((t) => t.path === path);
   tabs.value = tabs.value.filter((t) => t.path !== path);
+  tabCache.delete(path);
   if (activePath.value === path) {
     const next = tabs.value[idx] ?? tabs.value[idx - 1] ?? null;
     if (next) selectTab(next.path);
@@ -380,6 +396,7 @@ function closeTab(path: string) {
   }
 }
 function goHome() {
+  captureTab(); // so returning to this repo is instant
   activePath.value = "";
 }
 
@@ -677,18 +694,117 @@ async function chooseRepo() {
   await loadRepo(picked);
 }
 
+// Per-tab state cache. repo.value only ever holds one repo, so without this
+// every tab click re-ran the full git load (openRepo + commits + branches +
+// status) — the source of the switch lag. We snapshot a tab's rendered state
+// when leaving it and restore it instantly on return, then quietly revalidate.
+type TabSnap = {
+  repo: NonNullable<typeof repo.value>;
+  commits: typeof commits.value;
+  allCommitsLoaded: boolean;
+  branches: typeof branches.value;
+  status: typeof status.value;
+  selected: typeof selected.value;
+  view: typeof view.value;
+  stashes: typeof stashes.value;
+  tags: typeof tags.value;
+  files: typeof files.value;
+  remotes: typeof remotes.value;
+  bisect: typeof bisect.value;
+  state: typeof state.value;
+  flowCfg: typeof flowCfg.value;
+  prCount: typeof prCount.value;
+  ciMap: typeof ciMap.value;
+};
+const tabCache = new Map<string, TabSnap>();
+
+function captureTab() {
+  if (!repo.value) return;
+  tabCache.set(repo.value.path, {
+    repo: repo.value,
+    commits: commits.value,
+    allCommitsLoaded: allCommitsLoaded.value,
+    branches: branches.value,
+    status: status.value,
+    selected: selected.value,
+    view: view.value,
+    stashes: stashes.value,
+    tags: tags.value,
+    files: files.value,
+    remotes: remotes.value,
+    bisect: bisect.value,
+    state: state.value,
+    flowCfg: flowCfg.value,
+    prCount: prCount.value,
+    ciMap: ciMap.value,
+  });
+}
+
+function restoreTab(s: TabSnap) {
+  repo.value = s.repo;
+  commits.value = s.commits;
+  allCommitsLoaded.value = s.allCommitsLoaded;
+  branches.value = s.branches;
+  status.value = s.status;
+  selected.value = s.selected;
+  view.value = s.view;
+  stashes.value = s.stashes;
+  tags.value = s.tags;
+  files.value = s.files;
+  remotes.value = s.remotes;
+  bisect.value = s.bisect;
+  state.value = s.state;
+  flowCfg.value = s.flowCfg;
+  prCount.value = s.prCount;
+  ciMap.value = s.ciMap;
+}
+
+// Refresh a restored tab in the background — no spinner, applied in place only
+// if the user is still on it.
+async function revalidateTab(path: string) {
+  try {
+    const r = await openRepo(path);
+    const [c, b, s] = await Promise.all([
+      listCommits(r.path, FIRST_PAGE),
+      listBranches(r.path),
+      workingStatus(r.path),
+    ]);
+    if (activePath.value !== path) return; // moved on — keep the cached view
+    repo.value = r;
+    branches.value = b;
+    status.value = s;
+    // Only rebuild the commit list if the tip actually moved, so switching
+    // between unchanged tabs doesn't discard how far the user had scrolled.
+    if (c[0]?.id !== commits.value[0]?.id) {
+      commits.value = c;
+      allCommitsLoaded.value = c.length < FIRST_PAGE;
+      if (!allCommitsLoaded.value) void loadMoreCommits();
+    }
+    loadPrCount(path);
+    loadCiMap(path);
+    loadExtras(path);
+  } catch {
+    /* keep the cached view */
+  }
+}
+
 async function loadRepo(path: string) {
+  const prevPath = activePath.value;
+  // Highlight the target tab immediately so the switch feels instant; the
+  // current repo stays visible in place until the new data arrives (no home
+  // flash). Restored to the previous tab if the open fails.
+  activePath.value = path;
   loading.value = true;
   error.value = null;
   try {
     repo.value = await openRepo(path);
     const [c, b, s] = await Promise.all([
-      listCommits(repo.value.path, 500),
+      listCommits(repo.value.path, FIRST_PAGE),
       listBranches(repo.value.path),
       workingStatus(repo.value.path),
     ]);
     commits.value = c;
-    allCommitsLoaded.value = c.length < COMMIT_PAGE;
+    allCommitsLoaded.value = c.length < FIRST_PAGE;
     branches.value = b;
     status.value = s;
     selected.value = null; // nothing highlighted until the user clicks
@@ -700,9 +816,13 @@ async function loadRepo(path: string) {
     loadCiMap(r.path);
     loadExtras(r.path);
     watchRepo(r.path).catch(() => {}); // auto-refresh on external changes
+    // Stream the next page in behind the first paint so scrolling has a buffer
+    // ready without the initial switch waiting on it.
+    if (!allCommitsLoaded.value) void loadMoreCommits();
   } catch (e) {
     error.value = String(e);
-    repo.value = null;
+    // Fall back to the repo we were on (or home) rather than a blank screen.
+    activePath.value = repo.value?.path ?? prevPath ?? "";
     toast("Couldn't open repository", String(e), "error");
   } finally {
     loading.value = false;
@@ -1410,7 +1530,7 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
 
     <!-- Indeterminate activity bar — overlays the header's bottom edge, so it
          signals work without shifting any layout. -->
-    <div v-if="syncing" class="progress-bar" aria-hidden="true"></div>
+    <div v-if="syncing || loading" class="progress-bar" aria-hidden="true"></div>
 
     <!-- Merge/rebase in-progress banner -->
     <div v-if="showWorkspace && state.state !== 'clean'" class="op-banner">
@@ -1452,8 +1572,15 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
       @favorite="toggleFavorite"
     />
 
+    <!-- Opening the first repo (nothing to show in place yet) — a light
+         placeholder instead of a blank frame or a home-screen flash. -->
+    <div v-else-if="!repo" class="loading-screen">
+      <span class="spinner big"></span>
+      <span class="loading-name">Opening {{ activeName }}…</span>
+    </div>
+
     <!-- ── Workspace ───────────────────────────────────────────────── -->
-    <div v-else-if="repo" class="workspace">
+    <div v-else class="workspace">
       <!-- Sidebar -->
       <aside class="sidebar" :style="{ width: sidebarWidth + 'px' }">
         <div class="repo-head">
@@ -1799,6 +1926,19 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
 }
 .sync-status { display: flex; align-items: center; gap: var(--space-2); }
 .sync-label { font-size: 12px; color: var(--text-mid); }
+.spinner.big { width: 22px; height: 22px; border-width: 3px; }
+
+/* First-open placeholder — fills the frame under the tab bar. */
+.loading-screen {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  color: var(--text-mid);
+}
+.loading-name { font-size: 13px; }
 
 /* Interactive affordances: real controls get a pointer + hover, so the app
  * reads as clickable rather than a static mockup. */
