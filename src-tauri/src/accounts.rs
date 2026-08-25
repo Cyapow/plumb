@@ -901,6 +901,134 @@ fn gitlab_ci_map(base: &str, token: &str, project_enc: &str) -> Vec<CiStatus> {
     out
 }
 
+fn short_sha(sha: &str) -> String {
+    sha.chars().take(7).collect()
+}
+
+/// GitHub Actions runs → normalized PipelineRun list (recent, newest first).
+fn github_pipeline_runs(base: &str, token: &str, owner_repo: &str) -> Vec<PipelineRun> {
+    let url = format!("{}/repos/{}/actions/runs?per_page=50", base.trim_end_matches('/'), owner_repo);
+    let json: serde_json::Value = match ureq::get(&url)
+        .set("authorization", &format!("Bearer {token}"))
+        .set("user-agent", "Plumb")
+        .set("accept", "application/vnd.github+json")
+        .timeout(Duration::from_secs(20))
+        .call()
+    {
+        Ok(r) => r.into_json().unwrap_or(serde_json::Value::Null),
+        Err(_) => return Vec::new(),
+    };
+    json["workflow_runs"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|r| {
+            let status = match r["status"].as_str().unwrap_or("") {
+                "completed" => match r["conclusion"].as_str().unwrap_or("") {
+                    "success" => "success",
+                    "failure" | "timed_out" | "startup_failure" => "failure",
+                    "cancelled" => "canceled",
+                    _ => "other",
+                },
+                "in_progress" => "running",
+                "queued" | "waiting" | "requested" | "pending" => "pending",
+                _ => "other",
+            };
+            let sha = r["head_sha"].as_str().unwrap_or("").to_string();
+            PipelineRun {
+                id: r["id"].as_i64().map(|n| n.to_string()).unwrap_or_default(),
+                name: r["name"].as_str().unwrap_or("workflow").to_string(),
+                status: status.into(),
+                branch: r["head_branch"].as_str().unwrap_or("").to_string(),
+                short_sha: short_sha(&sha),
+                sha,
+                event: r["event"].as_str().unwrap_or("").to_string(),
+                title: r["display_title"].as_str().unwrap_or("").to_string(),
+                created_at: r["created_at"].as_str().unwrap_or("").to_string(),
+                web_url: r["html_url"].as_str().unwrap_or("").to_string(),
+            }
+        })
+        .collect()
+}
+
+/// GitLab pipelines → normalized PipelineRun list (recent, newest first).
+fn gitlab_pipeline_runs(base: &str, token: &str, project_enc: &str) -> Vec<PipelineRun> {
+    let url = format!("{}/api/v4/projects/{}/pipelines?per_page=50", base.trim_end_matches('/'), project_enc);
+    let arr: Vec<serde_json::Value> = match ureq::get(&url)
+        .set("authorization", &format!("Bearer {token}"))
+        .timeout(Duration::from_secs(20))
+        .call()
+    {
+        Ok(r) => r.into_json().unwrap_or_default(),
+        Err(_) => return Vec::new(),
+    };
+    arr.iter()
+        .map(|p| {
+            let status = match p["status"].as_str().unwrap_or("") {
+                "success" => "success",
+                "failed" => "failure",
+                "canceled" | "cancelled" => "canceled",
+                "running" => "running",
+                "pending" | "created" | "waiting_for_resource" | "preparing" | "scheduled" => "pending",
+                _ => "other",
+            };
+            let sha = p["sha"].as_str().unwrap_or("").to_string();
+            PipelineRun {
+                id: p["id"].as_i64().map(|n| n.to_string()).unwrap_or_default(),
+                name: p["ref"].as_str().unwrap_or("pipeline").to_string(),
+                status: status.into(),
+                branch: p["ref"].as_str().unwrap_or("").to_string(),
+                short_sha: short_sha(&sha),
+                sha,
+                event: p["source"].as_str().unwrap_or("").to_string(),
+                title: String::new(),
+                created_at: p["created_at"].as_str().unwrap_or("").to_string(),
+                web_url: p["web_url"].as_str().unwrap_or("").to_string(),
+            }
+        })
+        .collect()
+}
+
+/// Azure DevOps builds → normalized PipelineRun list (recent, newest first).
+fn azure_pipeline_runs(base: &str, token: &str, project_repo: &str) -> Vec<PipelineRun> {
+    let project = match azure_split(project_repo) {
+        Ok((p, _)) => p,
+        Err(_) => project_repo,
+    };
+    let url = format!(
+        "{}/{}/_apis/build/builds?api-version=7.1&$top=50&queryOrder=queueTimeDescending",
+        base.trim_end_matches('/'),
+        urlencode(project)
+    );
+    let json = match azure_get(&url, token) {
+        Some(j) => j,
+        None => return Vec::new(),
+    };
+    json["value"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|b| {
+            let status = azure_run_status(b["status"].as_str().unwrap_or(""), b["result"].as_str().unwrap_or(""));
+            let sha = b["sourceVersion"].as_str().unwrap_or("").to_string();
+            PipelineRun {
+                id: b["id"].as_i64().map(|n| n.to_string()).unwrap_or_default(),
+                name: b["definition"]["name"].as_str().unwrap_or("build").to_string(),
+                status,
+                branch: strip_ref(b["sourceBranch"].as_str().unwrap_or("")),
+                short_sha: short_sha(&sha),
+                sha,
+                event: b["reason"].as_str().unwrap_or("").to_string(),
+                title: String::new(),
+                created_at: b["queueTime"].as_str().unwrap_or("").to_string(),
+                web_url: b["_links"]["web"]["href"].as_str().unwrap_or("").to_string(),
+            }
+        })
+        .collect()
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineJob {
@@ -947,6 +1075,69 @@ pub async fn pipeline_detail(app: AppHandle, repo_path: String, sha: String) -> 
     Ok(Vec::new())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineRun {
+    pub id: String,
+    pub name: String,
+    /// Normalized: running | pending | success | failure | canceled | other.
+    pub status: String,
+    pub branch: String,
+    pub sha: String,
+    pub short_sha: String,
+    pub event: String,
+    pub title: String,
+    pub created_at: String,
+    pub web_url: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineRunList {
+    /// "ok" | "no_remote" | "no_account"
+    pub status: String,
+    pub provider: Option<String>,
+    pub host: Option<String>,
+    pub items: Vec<PipelineRun>,
+}
+
+/// Recent CI runs for the repo (newest first) — the repo-wide Pipelines view,
+/// independent of any single commit.
+#[tauri::command]
+pub async fn list_pipelines(app: AppHandle, repo_path: String) -> Result<PipelineRunList> {
+    let cfg = load(&app)?;
+    let mut remotes = repo_remotes(&repo_path);
+    remotes.sort_by_key(|(n, _)| if n == "origin" { 0 } else { 1 });
+    if remotes.is_empty() {
+        return Ok(PipelineRunList { status: "no_remote".into(), provider: None, host: None, items: vec![] });
+    }
+    let mut matched_host: Option<String> = None;
+    for (_, url) in &remotes {
+        if let Some((host, path)) = parse_remote(url) {
+            matched_host.get_or_insert(host.clone());
+            if let Some((conn, repo_id)) = match_conn(&cfg, &host, &path) {
+                let token = read_token(&conn.id)?;
+                let (provider, base) = (conn.provider.clone(), conn.base_url.clone());
+                let items = tauri::async_runtime::spawn_blocking(move || match provider.as_str() {
+                    "github" => github_pipeline_runs(&base, &token, &repo_id),
+                    "gitlab" => gitlab_pipeline_runs(&base, &token, &urlencode(&repo_id)),
+                    "azure" => azure_pipeline_runs(&base, &token, &repo_id),
+                    _ => Vec::new(),
+                })
+                .await
+                .map_err(|e| AccountError::Msg(e.to_string()))?;
+                return Ok(PipelineRunList {
+                    status: "ok".into(),
+                    provider: Some(conn.provider.clone()),
+                    host: Some(host),
+                    items,
+                });
+            }
+        }
+    }
+    Ok(PipelineRunList { status: "no_account".into(), provider: None, host: matched_host, items: vec![] })
+}
+
 /// Fetch a job's log (tail-truncated), for inline viewing.
 #[tauri::command]
 pub async fn job_log(app: AppHandle, repo_path: String, job_id: String) -> Result<String> {
@@ -977,11 +1168,19 @@ pub async fn job_log(app: AppHandle, repo_path: String, job_id: String) -> Resul
                     if gh {
                         req = req.set("user-agent", "Plumb").set("accept", "application/vnd.github+json");
                     }
-                    let text = req
-                        .call()
-                        .map_err(|e| http_err("Couldn't fetch the log", e))?
-                        .into_string()
-                        .map_err(|e| AccountError::Msg(e.to_string()))?;
+                    let text = match req.call() {
+                        Ok(resp) => resp.into_string().map_err(|e| AccountError::Msg(e.to_string()))?,
+                        // GitHub 302-redirects job logs to Azure blob storage; a
+                        // still-running job (or GC'd logs) 404s there as
+                        // BlobNotFound. Show a plain note instead of raw XML.
+                        Err(ureq::Error::Status(404, _)) | Err(ureq::Error::Status(410, _)) => {
+                            return Ok(
+                                "Logs aren't available for this job yet — it may still be running, or the logs have expired."
+                                    .to_string(),
+                            );
+                        }
+                        Err(e) => return Err(http_err("Couldn't fetch the log", e)),
+                    };
                     // Keep the tail so huge logs stay light.
                     const MAX: usize = 200_000;
                     if text.len() > MAX {

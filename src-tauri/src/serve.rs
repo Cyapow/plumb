@@ -569,6 +569,7 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, Strin
         "trigger_pipeline" => ok(block_on(accounts::trigger_pipeline(app.clone(), s("repoPath"), s("gitRef"), sopt("workflowId")))),
         "pipeline_detail" => ok(block_on(accounts::pipeline_detail(app.clone(), s("repoPath"), s("sha")))),
         "pipeline_action" => ok(block_on(accounts::pipeline_action(app.clone(), s("repoPath"), s("id"), s("action")))),
+        "list_pipelines" => ok(block_on(accounts::list_pipelines(app.clone(), s("repoPath")))),
         "job_log" => ok(block_on(accounts::job_log(app.clone(), s("repoPath"), s("jobId")))),
 
         // ── Native capability bridge (served-mode only) ──

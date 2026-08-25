@@ -33,6 +33,7 @@ async function viewLog(j: PipelineJob) {
 async function reload() {
   if (!props.sha) return;
   loading.value = true;
+  pipelines.value = []; // drop the previous run's jobs while the new one loads
   try {
     pipelines.value = await pipelineDetail(props.repoPath, props.sha);
   } catch {
@@ -41,7 +42,24 @@ async function reload() {
     loading.value = false;
   }
 }
-watch(open, (o) => o && reload());
+// Reset to the pipeline list and reload whenever the dialog opens OR the
+// target commit changes while it's already open (clicking another pipeline) —
+// otherwise the previous run's jobs/log panel would linger.
+watch(open, (o) => {
+  if (o) {
+    logJob.value = null;
+    reload();
+  }
+});
+watch(
+  () => props.sha,
+  () => {
+    if (open.value) {
+      logJob.value = null;
+      reload();
+    }
+  },
+);
 
 function cls(status: string) {
   const s = status.toLowerCase();

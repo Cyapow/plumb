@@ -85,6 +85,7 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 import CommitGraph from "./components/CommitGraph.vue";
 import ChangesView from "./components/ChangesView.vue";
 import PullRequests from "./components/PullRequests.vue";
+import PipelinesView from "./components/PipelinesView.vue";
 import CommitDetail from "./components/CommitDetail.vue";
 import ContextMenu from "./components/ContextMenu.vue";
 import FileInspector from "./components/FileInspector.vue";
@@ -176,7 +177,7 @@ const status = ref<StatusEntry[]>([]);
 const selected = ref<string | null>(null);
 const loading = ref(false);
 const error = ref<string | null>(null);
-const view = ref<"history" | "changes" | "prs">("history");
+const view = ref<"history" | "changes" | "prs" | "pipelines">("history");
 const prCount = ref<number | null>(null);
 const paletteOpen = ref(false);
 const commitFilter = ref("");
@@ -1615,6 +1616,9 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
               <span class="ico">⇄</span>Pull requests
               <span v-if="prCount !== null" class="count mono">{{ prCount }}</span>
             </div>
+            <div class="side-row clickable" :class="{ active: view === 'pipelines' }" @click="view = 'pipelines'">
+              <span class="ico">⚙</span>Pipelines
+            </div>
           </template>
         </nav>
 
@@ -1700,6 +1704,13 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
         v-else-if="view === 'prs'"
         :repo-path="repo.path"
         @create="openCreatePr()"
+        @pipeline="(sha, title) => sha && openPipeline(sha, title)"
+      />
+
+      <!-- Repo-wide pipelines -->
+      <PipelinesView
+        v-else-if="view === 'pipelines'"
+        :repo-path="repo.path"
         @pipeline="(sha, title) => sha && openPipeline(sha, title)"
       />
 
