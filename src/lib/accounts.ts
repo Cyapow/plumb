@@ -127,6 +127,28 @@ export function pipelineDetail(repoPath: string, sha: string): Promise<PipelineD
 export function pipelineAction(repoPath: string, id: string, action: "retry" | "cancel"): Promise<string> {
   return invoke("pipeline_action", { repoPath, id, action });
 }
+
+export interface PipelineRun {
+  id: string;
+  name: string;
+  status: string; // running | pending | success | failure | failed | canceled | other
+  branch: string;
+  sha: string;
+  shortSha: string;
+  event: string;
+  title: string;
+  createdAt: string;
+  webUrl: string;
+}
+export interface PipelineRunList {
+  status: string; // "ok" | "no_remote" | "no_account"
+  provider: string | null;
+  host: string | null;
+  items: PipelineRun[];
+}
+export function listPipelines(repoPath: string): Promise<PipelineRunList> {
+  return invoke("list_pipelines", { repoPath });
+}
 export function jobLog(repoPath: string, jobId: string): Promise<string> {
   return invoke("job_log", { repoPath, jobId });
 }
