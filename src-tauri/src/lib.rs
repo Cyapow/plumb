@@ -31,7 +31,11 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .hide_others()
         .show_all()
         .separator()
-        .quit()
+        // ⌘Q hides Plumb to the menu bar (keeps the serve agent alive). The
+        // predefined .quit() would call native terminate: and hard-quit,
+        // bypassing our exit interception — so use custom items instead.
+        .item(&mi("hide_to_tray", "Close to Menu Bar", Some("CmdOrCtrl+Q"))?)
+        .item(&mi("app_quit", "Quit Plumb", Some("CmdOrCtrl+Shift+Q"))?)
         .build()?;
 
     let file_menu = SubmenuBuilder::new(app, "File")
@@ -310,6 +314,24 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_decorum::init());
     }
     builder
+        // Closing the main window hides Plumb to the menu bar instead of quitting:
+        // the `serve` agent + tray keep running so editors stay connected. Quit is
+        // explicit (tray "Quit Plumb" or ⌘Q, which fire ExitRequested, not this).
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    #[cfg(target_os = "macos")]
+                    {
+                        use tauri::Manager as _;
+                        let _ = window
+                            .app_handle()
+                            .set_activation_policy(tauri::ActivationPolicy::Accessory);
+                    }
+                }
+            }
+        })
         .setup(|app| {
             // Vertically centre the macOS traffic lights in our 52px header, and
             // keep them there across show/resize (which macOS otherwise resets).
@@ -326,7 +348,25 @@ pub fn run() {
             // Menu clicks become "menu-action" events the frontend dispatches.
             app.on_menu_event(|app, event| {
                 use tauri::Emitter;
-                let _ = app.emit("menu-action", event.id().0.clone());
+                match event.id().0.as_str() {
+                    // ⌘Q → hide to the menu bar; the agent + tray stay alive.
+                    "hide_to_tray" => {
+                        use tauri::Manager as _;
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.hide();
+                        }
+                        #[cfg(target_os = "macos")]
+                        let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                    }
+                    // ⌘⇧Q → a genuine quit (matches the tray "Quit Plumb").
+                    "app_quit" => {
+                        serve::clear_discovery();
+                        app.exit(0);
+                    }
+                    other => {
+                        let _ = app.emit("menu-action", other.to_string());
+                    }
+                }
             });
 
             // Always run the local server + menu-bar tray, so editors can connect
@@ -491,11 +531,23 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
-        .run(|_app, event| {
-            // Clear the agent's advertisement on any exit (Cmd-Q, window close,
-            // etc.) so editors don't find a stale server.
-            if let tauri::RunEvent::Exit = event {
-                serve::clear_discovery();
+        .run(|app, event| match event {
+            // ⌘Q (and last-window-close) request an app exit. Keep the menu-bar
+            // agent alive instead so editors stay connected — hide to the tray.
+            // A real quit comes from the tray "Quit Plumb" item, which calls
+            // app.exit() and fires RunEvent::Exit directly (below), not this.
+            tauri::RunEvent::ExitRequested { api, .. } => {
+                api.prevent_exit();
+                use tauri::Manager as _;
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.hide();
+                }
+                #[cfg(target_os = "macos")]
+                let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
+            // Clear the agent's advertisement on a genuine exit so editors don't
+            // find a stale server.
+            tauri::RunEvent::Exit => serve::clear_discovery(),
+            _ => {}
         });
 }
