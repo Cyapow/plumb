@@ -61,6 +61,7 @@ import {
   flowConfig,
   flowStart,
   flowFinish,
+  getConfig,
   type FlowConfig,
   type StashEntry,
   type TagInfo,
@@ -439,6 +440,30 @@ const opLabel = computed(
 // poll notifies when a pending pipeline finishes.
 const ciMap = ref<Map<string, string>>(new Map());
 const prevCi = new Map<string, string>();
+
+// Per-repo pipeline-notification preference (set in Repository settings →
+// Notifications). Default "mine" so you aren't pinged for everyone's commits.
+function ciNotifyPref(path: string): "all" | "mine" | "off" {
+  try {
+    return JSON.parse(localStorage.getItem(`plumb.repo.${path}`) || "{}").ciNotify ?? "mine";
+  } catch {
+    return "mine";
+  }
+}
+// The email you commit as in a repo (git config user.email), memoized.
+const repoEmail = new Map<string, string>();
+async function myEmailFor(path: string): Promise<string> {
+  const hit = repoEmail.get(path);
+  if (hit !== undefined) return hit;
+  let e = "";
+  try {
+    e = ((await getConfig(path, ["user.email"]))["user.email"] || "").toLowerCase();
+  } catch {
+    /* no identity configured */
+  }
+  repoEmail.set(path, e);
+  return e;
+}
 async function refreshCiMap(path: string, notify: boolean) {
   let list;
   try {
@@ -448,9 +473,18 @@ async function refreshCiMap(path: string, notify: boolean) {
   }
   const next = new Map(list.map((c) => [c.sha, c.status]));
   if (notify) {
-    for (const [sha, status] of next) {
-      if (prevCi.get(sha) === "pending" && (status === "success" || status === "failure")) {
-        notifyCi(sha, status);
+    const pref = ciNotifyPref(path); // "all" | "mine" | "off"
+    if (pref !== "off") {
+      const me = pref === "mine" ? await myEmailFor(path) : "";
+      for (const [sha, status] of next) {
+        if (prevCi.get(sha) === "pending" && (status === "success" || status === "failure")) {
+          if (pref === "mine") {
+            // Only my own commits — skip anything we can't attribute to `me`.
+            const c = commits.value.find((x) => x.id === sha);
+            if (!c || c.author_email.toLowerCase() !== me) continue;
+          }
+          notifyCi(sha, status);
+        }
       }
     }
   }

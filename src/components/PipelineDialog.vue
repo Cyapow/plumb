@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Pipeline(s) for a commit: stages/jobs with status, retry / cancel, open logs.
-import { ref, watch } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { openUrl } from "../lib/native";
 import { pipelineDetail, pipelineAction, jobLog, type PipelineDetail, type PipelineJob } from "../lib/accounts";
 import { toast } from "../lib/ui";
@@ -71,6 +71,32 @@ function cls(status: string) {
   return "pending";
 }
 const isRunning = (p: PipelineDetail) => ["running", "pending"].includes(p.status.toLowerCase());
+
+// Silent background refresh (no spinner, no list-clear) so a running pipeline's
+// jobs update live while the dialog is open and not viewing a log.
+async function poll() {
+  if (!props.sha) return;
+  try {
+    pipelines.value = await pipelineDetail(props.repoPath, props.sha);
+  } catch {
+    /* keep what we have */
+  }
+}
+const anyRunning = computed(() => pipelines.value.some(isRunning));
+let timer: number | undefined;
+function arm() {
+  if (timer) clearTimeout(timer);
+  // Only poll while open, showing the list (not a log), and something's active.
+  if (!open.value || logJob.value || !anyRunning.value || document.hidden) return;
+  timer = window.setTimeout(async () => {
+    await poll();
+    arm();
+  }, 5000);
+}
+watch([open, anyRunning, logJob], arm);
+onUnmounted(() => {
+  if (timer) clearTimeout(timer);
+});
 
 async function act(p: PipelineDetail, action: "retry" | "cancel") {
   busyId.value = p.id;
