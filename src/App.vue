@@ -68,11 +68,13 @@ import {
   type TagInfo,
   type RepoState,
 } from "./lib/git";
+import { actionsFor, invokeAction, refreshActions } from "./lib/actions";
 import { listen, type UnlistenFn } from "./lib/transport";
 import { invoke, isServed, servedRepo } from "./lib/transport";
 import {
   openContextMenu,
   promptText,
+  promptConfirm,
   toast,
   fullscreen,
   appState,
@@ -118,6 +120,7 @@ import StashSaveDialog from "./components/StashSaveDialog.vue";
 import StashApplyDialog from "./components/StashApplyDialog.vue";
 import WorkflowDialog from "./components/WorkflowDialog.vue";
 import InputDialog from "./components/InputDialog.vue";
+import ConfirmDialog from "./components/ConfirmDialog.vue";
 import HomePage from "./components/HomePage.vue";
 import BranchTree from "./components/BranchTree.vue";
 import { buildBranchTree } from "./lib/branchtree";
@@ -328,8 +331,8 @@ function reflogMenu(e: MouseEvent, entry: ReflogEntry) {
     {
       label: "Hard reset branch to here…",
       danger: true,
-      action: () => {
-        if (window.confirm(`Hard reset ${headBranch.value} to ${entry.short_id}? This discards working changes.`)) {
+      action: async () => {
+        if (await promptConfirm({ title: "Hard reset branch?", body: `Reset ${headBranch.value} to ${entry.short_id}. This discards working changes.`, confirmLabel: "Hard reset", danger: true })) {
           runOp(() => gitReset(path, entry.id, "hard"), "Reset (hard)");
           reflogOpen.value = false;
         }
@@ -984,8 +987,8 @@ function pushMenu(e: MouseEvent) {
     {
       label: "Force push (with lease)…",
       danger: true,
-      action: () => {
-        if (window.confirm("Force-push with lease? This overwrites the remote branch if no one else has pushed."))
+      action: async () => {
+        if (await promptConfirm({ title: "Force push (with lease)?", body: "Overwrites the remote branch if no one else has pushed.", confirmLabel: "Force push", danger: true }))
           sync((p) => pushAdvanced(p, { forceWithLease: true }), "Force push", "Pushing");
       },
     },
@@ -1189,6 +1192,7 @@ watch([() => view.value, () => repo.value?.path], () => nextTick(measureHist));
 
 onMounted(async () => {
   refreshConnections();
+  refreshActions();
   unlisten = await listen("repo-changed", scheduleRefresh);
   unlistenMenu = await listen<string>("menu-action", (e) => handleMenuAction(e.payload));
   // Open in Plumb: a folder passed on launch (CLI / editor), or forwarded from
@@ -1297,12 +1301,18 @@ function commitMenu(e: MouseEvent, c: CommitRow) {
     {
       label: "Hard reset branch to here…",
       danger: true,
-      action: () => {
-        if (window.confirm(`Hard reset ${headBranch.value} to ${c.short_id}? This discards working changes.`))
+      action: async () => {
+        if (await promptConfirm({ title: "Hard reset branch?", body: `Reset ${headBranch.value} to ${c.short_id}. This discards working changes.`, confirmLabel: "Hard reset", danger: true }))
           runOp(() => gitReset(path, c.id, "hard"), "Reset (hard)");
       },
     },
   ];
+  const custom = actionsFor("commit");
+  if (custom.length) {
+    items.push({ separator: true, label: "" });
+    for (const a of custom)
+      items.push({ label: a.label, action: () => invokeAction(a, path, { sha: c.id, shortSha: c.short_id, branch: headBranch.value }) });
+  }
   openContextMenu(e, items);
 }
 
@@ -1349,8 +1359,8 @@ function branchMenu(e: MouseEvent, b: BranchInfo) {
     items.push({
       label: "Delete remote branch…",
       danger: true,
-      action: () => {
-        if (window.confirm(`Delete "${branch}" on ${remote}? This removes it for everyone.`))
+      action: async () => {
+        if (await promptConfirm({ title: `Delete "${branch}" on ${remote}?`, body: "This removes it for everyone.", confirmLabel: "Delete", danger: true }))
           runOp(() => deleteRemoteBranch(path, remote, branch), `Deleted ${remote}/${branch}`);
       },
     });
@@ -1359,11 +1369,27 @@ function branchMenu(e: MouseEvent, b: BranchInfo) {
       label: "Delete branch…",
       danger: true,
       disabled: b.is_head,
-      action: () => {
-        if (window.confirm(`Delete branch "${b.name}"?`))
+      action: async () => {
+        if (await promptConfirm({ title: `Delete branch "${b.name}"?`, confirmLabel: "Delete", danger: true }))
           runOp(() => deleteBranch(path, b.name), `Branch "${b.name}" deleted`);
       },
     });
+  }
+  const custom = actionsFor("branch");
+  if (custom.length) {
+    items.push({ separator: true, label: "" });
+    for (const a of custom) items.push({ label: a.label, action: () => invokeAction(a, path, { branch: b.name }) });
+  }
+  openContextMenu(e, items);
+}
+
+// Toolbar "Actions" button → the user's toolbar-context custom actions.
+function actionsMenu(e: MouseEvent) {
+  if (!repo.value) return;
+  const path = repo.value.path;
+  const items = actionsFor("toolbar").map((a) => ({ label: a.label, action: () => invokeAction(a, path, { branch: headBranch.value }) }));
+  if (!items.length) {
+    items.push({ label: "No toolbar actions — add in Settings → Actions", disabled: true, action: () => {} } as never);
   }
   openContextMenu(e, items);
 }
@@ -1404,8 +1430,8 @@ function tagMenu(e: MouseEvent, t: TagInfo) {
     {
       label: "Delete tag…",
       danger: true,
-      action: () => {
-        if (window.confirm(`Delete tag "${t.name}"? This only removes it locally.`))
+      action: async () => {
+        if (await promptConfirm({ title: `Delete tag "${t.name}"?`, body: "This only removes it locally.", confirmLabel: "Delete", danger: true }))
           runOp(() => deleteTag(path, t.name), `Tag "${t.name}" deleted`);
       },
     },
@@ -1475,8 +1501,8 @@ function stashMenu(e: MouseEvent, s: StashEntry) {
     {
       label: "Drop",
       danger: true,
-      action: () => {
-        if (window.confirm(`Drop stash@{${s.index}}?`)) runOp(() => stashDrop(path, s.index), "Stash dropped");
+      action: async () => {
+        if (await promptConfirm({ title: `Drop stash@{${s.index}}?`, confirmLabel: "Drop", danger: true })) runOp(() => stashDrop(path, s.index), "Stash dropped");
       },
     },
   ]);
@@ -1595,6 +1621,7 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
         <button class="btn" @click="openIntegrate('rebase')" title="Rebase the current branch onto another">Rebase</button>
         <button class="btn" @click="doStash" title="Stash changes with options">Stash</button>
         <button class="btn" @click="workflowOpen = true" title="Workflows — Git Flow, GitHub Flow, GitLab Flow and more">Workflows</button>
+        <button v-if="actionsFor('toolbar').length" class="btn" @click="actionsMenu" title="Your custom actions">Actions ▾</button>
       </div>
 
       <div class="spacer" data-tauri-drag-region></div>
@@ -1910,6 +1937,7 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
     <CommandPalette :open="paletteOpen" :items="paletteItems" @close="paletteOpen = false" />
     <CloneDialog v-model="cloneOpen" @cloned="loadRepo" />
     <InputDialog />
+    <ConfirmDialog />
     <PublishDialog
       v-if="repo"
       v-model="publishOpen"

@@ -10,7 +10,7 @@ import {
   pruneRemote,
   type RemoteInfo,
 } from "../lib/git";
-import { promptText, toast } from "../lib/ui";
+import { promptText, promptConfirm, toast } from "../lib/ui";
 
 const open = defineModel<boolean>({ required: true });
 const props = defineProps<{ repoPath: string }>();
@@ -66,8 +66,8 @@ async function editUrl(r: RemoteInfo) {
   if (url && url.trim() && url.trim() !== r.url) run(() => setRemoteUrl(props.repoPath, r.name, url.trim()), "URL updated");
 }
 
-function remove(r: RemoteInfo) {
-  if (window.confirm(`Remove remote "${r.name}"? This only affects your local config.`))
+async function remove(r: RemoteInfo) {
+  if (await promptConfirm({ title: `Remove remote "${r.name}"?`, body: "This only affects your local config.", confirmLabel: "Remove", danger: true }))
     run(() => removeRemote(props.repoPath, r.name), `Removed ${r.name}`);
 }
 </script>

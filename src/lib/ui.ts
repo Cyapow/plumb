@@ -116,6 +116,40 @@ export function resolveInput(value: string | null) {
   r?.(value);
 }
 
+// WKWebView also no-ops window.confirm (it returns true without prompting), so
+// a promise-based confirm is the only safe way to gate destructive actions.
+export const confirmDialog = reactive<{
+  open: boolean;
+  title: string;
+  body: string;
+  confirmLabel: string;
+  danger: boolean;
+  resolve: ((ok: boolean) => void) | null;
+}>({ open: false, title: "", body: "", confirmLabel: "Confirm", danger: false, resolve: null });
+
+export function promptConfirm(opts: {
+  title: string;
+  body?: string;
+  confirmLabel?: string;
+  danger?: boolean;
+}): Promise<boolean> {
+  return new Promise((resolve) => {
+    confirmDialog.title = opts.title;
+    confirmDialog.body = opts.body ?? "";
+    confirmDialog.confirmLabel = opts.confirmLabel ?? "Confirm";
+    confirmDialog.danger = opts.danger ?? false;
+    confirmDialog.resolve = resolve;
+    confirmDialog.open = true;
+  });
+}
+
+export function resolveConfirm(ok: boolean) {
+  const r = confirmDialog.resolve;
+  confirmDialog.resolve = null;
+  confirmDialog.open = false;
+  r?.(ok);
+}
+
 /* ── Full-screen diff ─────────────────────────────────────────────── */
 export interface FullscreenDiff {
   open: boolean;
@@ -156,7 +190,7 @@ export function closeFullscreen() {
 }
 
 /* ── Settings panel ───────────────────────────────────────────────── */
-export type SettingsSection = "accounts" | "ai" | "appearance" | "integrations" | "about";
+export type SettingsSection = "accounts" | "ai" | "appearance" | "integrations" | "actions" | "about";
 
 export const settings = reactive<{ open: boolean; section: SettingsSection }>({
   open: false,

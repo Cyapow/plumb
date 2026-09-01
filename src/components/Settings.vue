@@ -32,6 +32,7 @@ import { openUrl } from "../lib/native";
 import { toast } from "../lib/ui";
 import AiProvidersPanel from "./AiProvidersPanel.vue";
 import ConnectionsPanel from "./ConnectionsPanel.vue";
+import ActionsPanel from "./ActionsPanel.vue";
 import PlumbMark from "./PlumbMark.vue";
 
 // Start-at-login for the background server (Integrations tab).
@@ -74,6 +75,7 @@ const sections: { id: SettingsSection; label: string }[] = [
   { id: "ai", label: "AI providers" },
   { id: "appearance", label: "Appearance" },
   { id: "integrations", label: "Integrations" },
+  { id: "actions", label: "Actions" },
   { id: "about", label: "About" },
 ];
 
@@ -153,6 +155,7 @@ function hex(v: string | undefined): string {
           <div class="content-body">
             <ConnectionsPanel v-if="settings.section === 'accounts'" />
             <AiProvidersPanel v-else-if="settings.section === 'ai'" />
+            <ActionsPanel v-else-if="settings.section === 'actions'" />
 
             <div v-else-if="settings.section === 'integrations'" class="integrations">
               <div class="row-title">Editor panel</div>

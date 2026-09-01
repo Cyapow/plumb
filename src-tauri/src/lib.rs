@@ -1,4 +1,5 @@
 mod accounts;
+mod actions;
 mod ai;
 mod git;
 mod secrets;
@@ -530,6 +531,9 @@ pub fn run() {
             accounts::list_account_repos,
             accounts::create_remote_repo,
             watcher::watch_repo,
+            actions::list_actions,
+            actions::save_actions,
+            actions::run_action,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
