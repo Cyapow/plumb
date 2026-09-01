@@ -13,7 +13,7 @@ import {
   type Connection,
   type DeviceCode,
 } from "../lib/accounts";
-import { connectionsStore, refreshConnections, toast } from "../lib/ui";
+import { connectionsStore, refreshConnections, toast, promptConfirm } from "../lib/ui";
 
 const cfg = computed(() => connectionsStore.config);
 const adding = ref(false);
@@ -140,7 +140,7 @@ async function test(c: Connection) {
   }
 }
 async function remove(c: Connection) {
-  if (!window.confirm(`Disconnect ${c.label}? Its token is removed from the Keychain.`)) return;
+  if (!(await promptConfirm({ title: `Disconnect ${c.label}?`, body: "Its token is removed from the Keychain.", confirmLabel: "Disconnect", danger: true }))) return;
   await removeConnection(c.id);
   await refreshConnections();
 }

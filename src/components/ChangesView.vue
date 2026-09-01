@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "../lib/transport";
+import { actionsFor, invokeAction } from "../lib/actions";
 import {
   workingStatus,
   stagePaths,
@@ -28,6 +29,7 @@ import {
   refreshAiConfig,
   openSettings,
   promptText,
+  promptConfirm,
   type MenuItem,
 } from "../lib/ui";
 import { generateCommitMessage, type GeneratedMessage } from "../lib/ai";
@@ -328,7 +330,7 @@ function fileMenu(e: MouseEvent, entry: StatusEntry) {
       label: "Discard changes…",
       danger: true,
       action: async () => {
-        if (!window.confirm(`Discard changes to ${entry.path}? This cannot be undone.`)) return;
+        if (!(await promptConfirm({ title: `Discard changes to ${entry.path}?`, body: "This cannot be undone.", confirmLabel: "Discard", danger: true }))) return;
         try {
           await discardPaths(props.repoPath, [entry.path]);
           await reload();
@@ -339,6 +341,11 @@ function fileMenu(e: MouseEvent, entry: StatusEntry) {
       },
     },
   ];
+  const custom = actionsFor("file");
+  if (custom.length) {
+    items.push({ separator: true, label: "" });
+    for (const a of custom) items.push({ label: a.label, action: () => invokeAction(a, props.repoPath, { file: entry.path }) });
+  }
   openContextMenu(e, items);
 }
 

@@ -571,6 +571,17 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, Strin
         "pipeline_detail" => ok(block_on(accounts::pipeline_detail(app.clone(), s("repoPath"), s("sha")))),
         "pipeline_action" => ok(block_on(accounts::pipeline_action(app.clone(), s("repoPath"), s("id"), s("action")))),
         "list_pipelines" => ok(block_on(accounts::list_pipelines(app.clone(), s("repoPath")))),
+        "list_actions" => ok(crate::actions::list_actions(app.clone())),
+        "save_actions" => ok(crate::actions::save_actions(
+            app.clone(),
+            serde_json::from_value(args["actions"].clone()).unwrap_or_default(),
+        )),
+        "run_action" => ok(block_on(crate::actions::run_action(
+            app.clone(),
+            s("repoPath"),
+            s("id"),
+            serde_json::from_value(args["ctx"].clone()).unwrap_or_default(),
+        ))),
         "job_log" => ok(block_on(accounts::job_log(app.clone(), s("repoPath"), s("jobId")))),
 
         // ── Native capability bridge (served-mode only) ──

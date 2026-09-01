@@ -3,7 +3,7 @@
 import { ref, watch } from "vue";
 import { openFolder } from "../lib/native";
 import { listWorktrees, addWorktree, removeWorktree, type WorktreeInfo } from "../lib/git";
-import { toast } from "../lib/ui";
+import { toast, promptConfirm } from "../lib/ui";
 
 const open = defineModel<boolean>({ required: true });
 const props = defineProps<{ repoPath: string; branches: string[] }>();
@@ -48,7 +48,7 @@ async function add() {
 }
 
 async function remove(t: WorktreeInfo) {
-  if (!window.confirm(`Remove worktree at ${t.path}? (Your commits stay in the repo.)`)) return;
+  if (!(await promptConfirm({ title: "Remove worktree?", body: `${t.path}\n(Your commits stay in the repo.)`, confirmLabel: "Remove", danger: true }))) return;
   try {
     await removeWorktree(props.repoPath, t.path);
     await reload();

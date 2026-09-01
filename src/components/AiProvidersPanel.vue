@@ -19,7 +19,7 @@ import {
   type AiProvider,
   type EnvKey,
 } from "../lib/ai";
-import { aiStore, refreshAiConfig, toast } from "../lib/ui";
+import { aiStore, refreshAiConfig, toast, promptConfirm } from "../lib/ui";
 
 const cfg = computed(() => aiStore.config);
 const adding = ref(false);
@@ -251,7 +251,7 @@ async function makeDefault(id: string) {
   await refreshAiConfig();
 }
 async function remove(p: AiProvider) {
-  if (!window.confirm(`Remove "${p.label}"? Its Keychain key is deleted too.`)) return;
+  if (!(await promptConfirm({ title: `Remove "${p.label}"?`, body: "Its Keychain key is deleted too.", confirmLabel: "Remove", danger: true }))) return;
   await removeAiProvider(p.id);
   await refreshAiConfig();
 }
