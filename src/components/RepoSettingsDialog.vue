@@ -19,7 +19,7 @@ import { toast } from "../lib/ui";
 const open = defineModel<boolean>({ required: true });
 const props = defineProps<{ repoPath: string; repoName: string }>();
 
-type Tab = "general" | "signing" | "issues" | "ignore";
+type Tab = "general" | "signing" | "issues" | "notifications" | "ignore";
 const tab = ref<Tab>("general");
 
 // General
@@ -37,6 +37,8 @@ const issueUrl = ref("");
 const issuePrefix = ref("#");
 // GitMoji (app-level)
 const gitmoji = ref(false);
+// Pipeline notifications (app-level): all | mine | off
+const ciNotify = ref<"all" | "mine" | "off">("mine");
 // Ignore
 const ignore = ref("");
 
@@ -51,6 +53,7 @@ function loadApp() {
     issueUrl.value = d.issueUrl ?? "";
     issuePrefix.value = d.issuePrefix ?? "#";
     gitmoji.value = !!d.gitmoji;
+    ciNotify.value = d.ciNotify ?? "mine";
   } catch {
     /* defaults */
   }
@@ -58,7 +61,12 @@ function loadApp() {
 function saveApp() {
   localStorage.setItem(
     appKey(),
-    JSON.stringify({ issueUrl: issueUrl.value, issuePrefix: issuePrefix.value, gitmoji: gitmoji.value }),
+    JSON.stringify({
+      issueUrl: issueUrl.value,
+      issuePrefix: issuePrefix.value,
+      gitmoji: gitmoji.value,
+      ciNotify: ciNotify.value,
+    }),
   );
 }
 
@@ -118,8 +126,8 @@ const saveIgnore = () => guard(() => setGitignore(props.repoPath, ignore.value),
       <div class="sheet">
         <div class="rail">
           <div class="rail-title">{{ repoName }}</div>
-          <button v-for="t in (['general','signing','issues','ignore'] as Tab[])" :key="t" class="rail-item" :class="{ on: tab === t }" @click="tab = t">
-            {{ ({ general: 'General', signing: 'Signing', issues: 'Issue tracking', ignore: 'Ignore' })[t] }}
+          <button v-for="t in (['general','signing','issues','notifications','ignore'] as Tab[])" :key="t" class="rail-item" :class="{ on: tab === t }" @click="tab = t">
+            {{ ({ general: 'General', signing: 'Signing', issues: 'Issue tracking', notifications: 'Notifications', ignore: 'Ignore' })[t] }}
           </button>
         </div>
         <div class="content">
@@ -154,6 +162,22 @@ const saveIgnore = () => guard(() => setGitignore(props.repoPath, ignore.value),
               <label class="field"><span>Issue tracker URL</span><input v-model="issueUrl" @blur="saveApp" placeholder="https://…/issues/{id}" spellcheck="false" /></label>
               <label class="field"><span>Issue number prefix</span><input v-model="issuePrefix" @blur="saveApp" placeholder="#" spellcheck="false" /></label>
               <div class="hint">Use <span class="mono">{id}</span> in the URL where the issue number goes; commit messages with <span class="mono">{{ issuePrefix }}123</span> become links.</div>
+            </template>
+
+            <!-- Notifications -->
+            <template v-else-if="tab === 'notifications'">
+              <label class="field"><span>Pipeline notifications</span>
+                <select v-model="ciNotify" @change="saveApp">
+                  <option value="mine">Only my commits</option>
+                  <option value="all">All commits</option>
+                  <option value="off">Off</option>
+                </select>
+              </label>
+              <div class="hint">
+                Desktop notifications when a pipeline finishes. <b>Only my commits</b> matches your
+                committer email (<span class="mono">{{ email || "user.email" }}</span>), so you aren't
+                pinged for everyone else's pushes.
+              </div>
             </template>
 
             <!-- Ignore -->

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Repo-wide CI runs — every recent pipeline for the open repo, not tied to a
 // single commit. Click a run to inspect its jobs, or ↗ to open it on the host.
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { openUrl } from "../lib/native";
 import { listPipelines, type PipelineRunList, type PipelineRun } from "../lib/accounts";
 import { openSettings } from "../lib/ui";
@@ -52,19 +52,43 @@ const tabs: { id: Filter; label: string }[] = [
   { id: "failed", label: "Failed" },
 ];
 
-async function load() {
-  loading.value = true;
-  error.value = null;
+// `silent` polls in the background without the spinner or clobbering the list
+// with an error toast — used by the auto-refresh loop.
+async function load(silent = false) {
+  if (!silent) loading.value = true;
+  if (!silent) error.value = null;
   try {
-    data.value = await listPipelines(props.repoPath);
+    const d = await listPipelines(props.repoPath);
+    data.value = d;
+    if (silent) error.value = null;
   } catch (e) {
-    error.value = String(e);
-    data.value = null;
+    if (!silent) {
+      error.value = String(e);
+      data.value = null;
+    }
   } finally {
-    loading.value = false;
+    if (!silent) loading.value = false;
   }
 }
-watch(() => props.repoPath, load, { immediate: true });
+watch(() => props.repoPath, () => load(), { immediate: true });
+
+// Auto-refresh: fast while any run is active, slow baseline otherwise; paused
+// while the window is hidden. Keeps a running pipeline's status live without a
+// manual Refresh.
+const hasActive = computed(() => items.value.some((r) => isActive(r.status)));
+let timer: number | undefined;
+function arm() {
+  const delay = hasActive.value ? 6000 : 30000;
+  timer = window.setTimeout(run, delay);
+}
+async function run() {
+  if (!document.hidden) await load(true);
+  arm();
+}
+onMounted(arm);
+onUnmounted(() => {
+  if (timer) clearTimeout(timer);
+});
 
 function iso(s: string): string {
   const t = Date.parse(s);
@@ -78,7 +102,7 @@ function iso(s: string): string {
       <span class="title">Pipelines</span>
       <span v-if="data?.host" class="host mono">{{ data.host }}</span>
       <span class="grow"></span>
-      <button class="btn" :disabled="loading" @click="load">{{ loading ? "…" : "Refresh" }}</button>
+      <button class="btn" :disabled="loading" @click="load()">{{ loading ? "…" : "Refresh" }}</button>
     </div>
 
     <div v-if="data?.status === 'ok' && items.length" class="ph-tabs">
