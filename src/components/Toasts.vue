@@ -29,13 +29,19 @@ import { toasts } from "../lib/ui";
 .toast {
   display: flex;
   gap: var(--space-3);
-  align-items: center;
+  align-items: flex-start;
   min-width: 240px;
   max-width: 360px;
+  box-sizing: border-box;
+  overflow: hidden;
   padding: var(--space-3) var(--space-4);
   background: var(--raised);
   border: 1px solid var(--line);
   box-shadow: var(--shadow-lg);
+}
+.toast .text {
+  min-width: 0;
+  flex: 1;
 }
 .toast .glyph {
   width: 22px; height: 22px; flex: none;
@@ -44,6 +50,20 @@ import { toasts } from "../lib/ui";
   background: var(--lane-3);
 }
 .toast.error .glyph { background: var(--accent); }
-.toast .title { font-size: 13px; font-weight: 600; }
-.toast .detail { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+.toast .title {
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.toast .detail {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 </style>

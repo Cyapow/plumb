@@ -59,9 +59,18 @@ export interface Toast {
 export const toasts = reactive<{ list: Toast[] }>({ list: [] });
 let toastSeq = 1;
 
+// Git output can run to hundreds of lines; keep the toast to a readable
+// snippet so it can't grow past its box.
+const TOAST_DETAIL_MAX = 400;
+
 export function toast(title: string, detail?: string, kind: "ok" | "error" = "ok") {
   const id = toastSeq++;
-  toasts.list.push({ id, title, detail, kind });
+  const trimmed = detail?.trim();
+  const short =
+    trimmed && trimmed.length > TOAST_DETAIL_MAX
+      ? trimmed.slice(0, TOAST_DETAIL_MAX) + "\u2026"
+      : trimmed;
+  toasts.list.push({ id, title, detail: short, kind });
   setTimeout(() => {
     const i = toasts.list.findIndex((t) => t.id === id);
     if (i !== -1) toasts.list.splice(i, 1);
