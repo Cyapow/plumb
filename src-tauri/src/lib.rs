@@ -467,6 +467,7 @@ pub fn run() {
             git::reset,
             git::discard_paths,
             git::delete_branch,
+            git::delete_tag,
             git::fetch,
             git::pull,
             git::push,

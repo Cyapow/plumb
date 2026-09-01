@@ -31,6 +31,7 @@ import {
   checkoutCommit,
   createBranch,
   deleteBranch,
+  deleteTag,
   reset as gitReset,
   uncommit,
   commit as gitCommit,
@@ -540,6 +541,13 @@ const localBranches = computed(() => branches.value.filter((b) => !b.is_remote))
 const remoteBranches = computed(() => branches.value.filter((b) => b.is_remote));
 const headBranch = computed(() => repo.value?.head_branch ?? "HEAD");
 const headInfo = computed(() => localBranches.value.find((b) => b.is_head));
+// When detached (checked out a tag/commit), head_branch is the short sha —
+// label it with the tag pointing there, if any, so it's recognisable.
+const detachedLabel = computed(() => {
+  const sha = repo.value?.head_branch ?? "";
+  const tag = tags.value.find((t) => t.target?.startsWith(sha));
+  return tag ? `${tag.name} · ${sha}` : sha;
+});
 
 // Toolbar search. "view" filters the loaded commits client-side; "message" and
 // "code" search all history via the backend (git log --grep / pickaxe -G).
@@ -1360,6 +1368,50 @@ function branchMenu(e: MouseEvent, b: BranchInfo) {
   openContextMenu(e, items);
 }
 
+// Detached HEAD chip: click to return to a local branch.
+function headMenu(e: MouseEvent) {
+  const items = localBranches.value
+    .filter((b) => !b.is_head)
+    .map((b) => ({ label: `Check out ${b.name}`, action: () => checkout(b.name) }));
+  if (!items.length) return;
+  openContextMenu(e, items);
+}
+
+// Right-click a tag: check it out to test, branch from it, diff it, delete it.
+function tagMenu(e: MouseEvent, t: TagInfo) {
+  if (!repo.value) return;
+  const path = repo.value.path;
+  openContextMenu(e, [
+    {
+      label: "Check out (detached)",
+      disabled: !t.target,
+      action: () => t.target && runOp(() => checkoutCommit(path, t.target!), `Checked out ${t.name}`),
+    },
+    {
+      label: "Create branch from tag…",
+      disabled: !t.target,
+      action: async () => {
+        const name = await promptText({ title: "New branch", label: `From ${t.name}`, placeholder: "feature/…" });
+        if (name && name.trim() && t.target)
+          runOp(() => createBranch(path, name.trim(), t.target!, true), `Branch "${name.trim()}" created`);
+      },
+    },
+    { label: `Compare ${t.name} with…`, action: () => openCompare(t.name) },
+    { separator: true, label: "" },
+    { label: "Reveal in history", disabled: !t.target, action: () => scrollToCommit(t.target) },
+    { label: "Copy tag name", action: () => copy(t.name, "Tag name") },
+    { separator: true, label: "" },
+    {
+      label: "Delete tag…",
+      danger: true,
+      action: () => {
+        if (window.confirm(`Delete tag "${t.name}"? This only removes it locally.`))
+          runOp(() => deleteTag(path, t.name), `Tag "${t.name}" deleted`);
+      },
+    },
+  ]);
+}
+
 /* ── Stashes ──────────────────────────────────────────────────────── */
 function doStash() {
   if (!repo.value) return;
@@ -1628,6 +1680,17 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
             <button class="rh-btn" title="Repository settings" @click="repoSettingsOpen = true">⚙</button>
           </div>
           <div class="repo-path mono">{{ repo.path }}</div>
+          <button
+            v-if="repo.detached"
+            class="head-chip detached mono"
+            title="Detached HEAD — click to check out a branch"
+            @click="headMenu"
+          >
+            ⚠ detached · {{ detachedLabel }}
+          </button>
+          <div v-else-if="repo.head_branch" class="head-chip mono" :title="`On branch ${repo.head_branch}`">
+            ⎇ {{ repo.head_branch }}
+          </div>
         </div>
 
         <div class="side-filter">
@@ -1711,18 +1774,20 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           <div class="sect-head" @click="toggleSection('tags')">
             <span class="sect-chev">{{ collapsedSections.tags ? "▸" : "▾" }}</span>
             <span class="section-label">Tags</span>
-            <span v-if="!sideFilter && tags.length > 12" class="tag-count mono">{{ tags.length }}</span>
+            <span v-if="tags.length" class="tag-count mono">{{ fTags.length }}</span>
           </div>
-          <template v-if="!collapsedSections.tags">
+          <div v-if="!collapsedSections.tags" class="tag-scroll">
             <div
-              v-for="t in (sideFilter ? fTags : fTags.slice(0, 12))"
+              v-for="t in fTags"
               :key="t.name"
               class="side-row mono muted clickable"
+              :title="t.name"
               @click="scrollToCommit(t.target)"
+              @contextmenu="tagMenu($event, t)"
             >
               <span class="ellipsis">⌾ {{ t.name }}</span>
             </div>
-          </template>
+          </div>
         </nav>
 
       </aside>
@@ -2182,6 +2247,18 @@ kbd {
 .rh-btn:hover { color: var(--accent-strong, var(--accent)); }
 .repo-title { font-size: 13px; font-weight: 700; }
 .repo-path { font-size: 10.5px; color: var(--text-faint); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.head-chip {
+  display: block; width: 100%; text-align: left; margin-top: 6px;
+  padding: 3px 8px; font-size: 11px; background: var(--raised);
+  border: 1px solid var(--line); color: var(--text-mid);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.head-chip.detached {
+  cursor: pointer; color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}
+.head-chip.detached:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
 .side-filter { display: flex; align-items: center; gap: 6px; margin: var(--space-2) var(--space-3) 0; padding: 0 8px; height: 28px; background: var(--bg); border: 1px solid var(--line); }
 .side-filter .sf-ico { color: var(--text-faint); font-size: 12px; flex: none; }
 .side-filter input { flex: 1; min-width: 0; height: 100%; background: none; border: none; color: var(--text); font-size: 12px; }
@@ -2189,6 +2266,9 @@ kbd {
 .side-filter input::placeholder { color: var(--text-faint); }
 .side-filter .sf-x { flex: none; width: 16px; height: 16px; background: var(--raised); border: 1px solid var(--line); color: var(--text-dim); font-size: 9px; cursor: pointer; line-height: 1; }
 .tag-count { margin-left: auto; font-size: 10px; color: var(--accent); }
+/* Tags can be numerous — cap the height and scroll within the section so the
+ * rest of the sidebar stays reachable. */
+.tag-scroll { max-height: 240px; overflow-y: auto; }
 
 .side-section { padding: var(--space-4) 0 0; }
 .side-section .section-label { padding: 0 var(--space-3) var(--space-2); }

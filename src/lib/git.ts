@@ -466,6 +466,10 @@ export function deleteBranch(path: string, name: string): Promise<void> {
   return invoke("delete_branch", { path, name });
 }
 
+export function deleteTag(path: string, name: string): Promise<void> {
+  return invoke("delete_tag", { path, name });
+}
+
 export function fetch(path: string): Promise<string> {
   return invoke("fetch", { path });
 }

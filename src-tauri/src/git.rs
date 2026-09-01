@@ -899,15 +899,32 @@ pub struct TagInfo {
 #[tauri::command]
 pub fn list_tags(path: String) -> Result<Vec<TagInfo>> {
     let repo = open(&path)?;
-    let mut out = Vec::new();
+    // Carry a sort key: the tagger date for annotated tags, else the target
+    // commit's time for lightweight tags.
+    let mut out: Vec<(i64, TagInfo)> = Vec::new();
     repo.tag_foreach(|oid, name| {
         let full = String::from_utf8_lossy(name);
         let short = full.strip_prefix("refs/tags/").unwrap_or(&full).to_string();
-        out.push(TagInfo { name: short, target: Some(oid.to_string()) });
+        let when = repo
+            .find_tag(oid)
+            .ok()
+            .map(|t| t.tagger().map(|s| s.when().seconds()).unwrap_or(0))
+            .filter(|&s| s != 0)
+            .or_else(|| repo.find_commit(oid).ok().map(|c| c.time().seconds()))
+            .or_else(|| {
+                repo.find_tag(oid)
+                    .ok()
+                    .and_then(|t| t.target().ok())
+                    .and_then(|o| o.peel_to_commit().ok())
+                    .map(|c| c.time().seconds())
+            })
+            .unwrap_or(0);
+        out.push((when, TagInfo { name: short, target: Some(oid.to_string()) }));
         true
     })?;
-    out.sort_by(|a, b| b.name.cmp(&a.name));
-    Ok(out)
+    // Newest first; fall back to name for tags sharing a timestamp.
+    out.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.name.cmp(&a.1.name)));
+    Ok(out.into_iter().map(|(_, t)| t).collect())
 }
 
 /* ── File history & blame ─────────────────────────────────────────── */
@@ -1584,6 +1601,14 @@ pub fn delete_branch(path: String, name: String) -> Result<()> {
     let repo = open(&path)?;
     let mut branch = repo.find_branch(&name, BranchType::Local)?;
     branch.delete()?;
+    Ok(())
+}
+
+/// Delete a local tag by short name (e.g. "v1.2.3").
+#[tauri::command]
+pub fn delete_tag(path: String, name: String) -> Result<()> {
+    let repo = open(&path)?;
+    repo.tag_delete(&name)?;
     Ok(())
 }
 
