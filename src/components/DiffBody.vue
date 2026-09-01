@@ -56,6 +56,21 @@ const verb = () => (props.actionLabel?.startsWith("Unstage") ? "Unstage" : "Stag
 interface Cell { l: DiffLine; li: number }
 interface SplitRow { left?: Cell; right?: Cell; ctx?: boolean }
 const split = computed(() => prefs.split);
+
+// Side-by-side panes scroll horizontally on their own; keep their vertical
+// scroll in lock-step so the two columns always show the same rows.
+const leftPane = ref<HTMLElement | null>(null);
+const rightPane = ref<HTMLElement | null>(null);
+let syncing = false;
+function onPaneScroll(from: "l" | "r") {
+  if (syncing) return;
+  const src = from === "l" ? leftPane.value : rightPane.value;
+  const dst = from === "l" ? rightPane.value : leftPane.value;
+  if (!src || !dst || dst.scrollTop === src.scrollTop) return;
+  syncing = true;
+  dst.scrollTop = src.scrollTop;
+  requestAnimationFrame(() => (syncing = false));
+}
 const splitRows = computed<SplitRow[][]>(() =>
   props.hunks.map((h) => {
     const rows: SplitRow[] = [];
@@ -112,12 +127,14 @@ function pickedInHunk(hi: number): number[] {
       <template v-for="(h, hi) in hunks" :key="hi">
         <div class="hunk-head">
           <span class="hh-text">{{ h.header }}</span>
-          <button
-            v-if="selectable && pickedInHunk(hi).length"
-            class="hunk-btn accent"
-            @click="emit('lineAction', hi, pickedInHunk(hi))"
-          >{{ verb() }} {{ pickedInHunk(hi).length }} line{{ pickedInHunk(hi).length === 1 ? "" : "s" }}</button>
-          <button v-if="actionLabel" class="hunk-btn" @click="$emit('hunkAction', hi)">{{ actionLabel }}</button>
+          <span class="hunk-actions">
+            <button
+              v-if="selectable && pickedInHunk(hi).length"
+              class="hunk-btn accent"
+              @click="emit('lineAction', hi, pickedInHunk(hi))"
+            >{{ verb() }} {{ pickedInHunk(hi).length }} line{{ pickedInHunk(hi).length === 1 ? "" : "s" }}</button>
+            <button v-if="actionLabel" class="hunk-btn" @click="$emit('hunkAction', hi)">{{ actionLabel }}</button>
+          </span>
         </div>
         <div
           v-for="(l, li) in h.lines"
@@ -137,30 +154,52 @@ function pickedInHunk(hi: number): number[] {
       </template>
     </div>
 
-    <!-- Side-by-side -->
-    <div v-else class="hunks mono">
-      <template v-for="(h, hi) in hunks" :key="hi">
-        <div class="hunk-head">
-          <span class="hh-text">{{ h.header }}</span>
-          <button v-if="actionLabel" class="hunk-btn" @click="$emit('hunkAction', hi)">{{ actionLabel }}</button>
-        </div>
-        <div v-for="(row, ri) in splitRows[hi]" :key="hi + '-' + ri" class="srow">
-          <div class="side" :class="row.ctx ? 'ctx' : row.left ? 'del' : 'empty'">
-            <span class="ln">{{ row.left?.l.old_lineno ?? "" }}</span>
-            <span v-if="row.left && segsFor(hi, row.left.li)" class="content"
-              ><span v-for="(s, k) in segsFor(hi, row.left.li)" :key="k" :class="{ word: s.changed }">{{ s.text }}</span></span
+    <!-- Side-by-side: two independent panes. Each scrolls horizontally on its
+         own; their vertical scroll is kept in sync so rows stay aligned. -->
+    <div v-else class="split-wrap">
+      <div class="pane pane-left" ref="leftPane" @scroll="onPaneScroll('l')">
+        <div class="pane-inner mono">
+          <template v-for="(h, hi) in hunks" :key="hi">
+            <div class="hunk-head">
+              <span class="hh-text">{{ h.header }}</span>
+              <span class="hunk-actions">
+                <button v-if="actionLabel" class="hunk-btn" @click="$emit('hunkAction', hi)">{{ actionLabel }}</button>
+              </span>
+            </div>
+            <div
+              v-for="(row, ri) in splitRows[hi]"
+              :key="hi + '-' + ri"
+              class="pline"
+              :class="row.ctx ? 'ctx' : row.left ? 'del' : 'empty'"
             >
-            <span v-else-if="row.left" class="content" v-html="hl(row.left.l.content)"></span>
-          </div>
-          <div class="side" :class="row.ctx ? 'ctx' : row.right ? 'add' : 'empty'">
-            <span class="ln">{{ row.right?.l.new_lineno ?? "" }}</span>
-            <span v-if="row.right && segsFor(hi, row.right.li)" class="content"
-              ><span v-for="(s, k) in segsFor(hi, row.right.li)" :key="k" :class="{ word: s.changed }">{{ s.text }}</span></span
-            >
-            <span v-else-if="row.right" class="content" v-html="hl(row.right.l.content)"></span>
-          </div>
+              <span class="ln">{{ row.left?.l.old_lineno ?? "" }}</span>
+              <span v-if="row.left && segsFor(hi, row.left.li)" class="content"
+                ><span v-for="(s, k) in segsFor(hi, row.left.li)" :key="k" :class="{ word: s.changed }">{{ s.text }}</span></span
+              >
+              <span v-else-if="row.left" class="content" v-html="hl(row.left.l.content)"></span>
+            </div>
+          </template>
         </div>
-      </template>
+      </div>
+      <div class="pane pane-right" ref="rightPane" @scroll="onPaneScroll('r')">
+        <div class="pane-inner mono">
+          <template v-for="(h, hi) in hunks" :key="hi">
+            <div class="hunk-head"><span class="hh-text">{{ h.header }}</span></div>
+            <div
+              v-for="(row, ri) in splitRows[hi]"
+              :key="hi + '-' + ri"
+              class="pline"
+              :class="row.ctx ? 'ctx' : row.right ? 'add' : 'empty'"
+            >
+              <span class="ln">{{ row.right?.l.new_lineno ?? "" }}</span>
+              <span v-if="row.right && segsFor(hi, row.right.li)" class="content"
+                ><span v-for="(s, k) in segsFor(hi, row.right.li)" :key="k" :class="{ word: s.changed }">{{ s.text }}</span></span
+              >
+              <span v-else-if="row.right" class="content" v-html="hl(row.right.l.content)"></span>
+            </div>
+          </template>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -180,6 +219,14 @@ function pickedInHunk(hi: number): number[] {
   border-top: 1px solid var(--raised); border-bottom: 1px solid var(--raised);
 }
 .hunk-head .hh-text { flex: 1; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+/* Keep the stage/unstage buttons pinned to the right edge of the pane so a
+   horizontal scroll can't push them out of reach. */
+.hunk-actions {
+  position: sticky; right: 0; margin-left: auto;
+  display: flex; align-items: center; gap: 6px;
+  padding-left: 10px; background: var(--line-soft);
+}
+.hunk-actions:empty { display: none; }
 .hunk-btn { flex: none; font-family: var(--font-ui); font-size: 10.5px; font-weight: 600; padding: 2px 8px; margin: 3px 0; background: var(--raised); border: 1px solid var(--line); color: var(--text-mid); cursor: pointer; }
 .hunk-btn:hover { border-color: var(--accent); color: var(--accent); }
 .hunk-btn.accent { background: var(--accent); color: var(--accent-on); border-color: var(--accent); }
@@ -200,16 +247,23 @@ function pickedInHunk(hi: number): number[] {
 .line.add .word { background: color-mix(in srgb, var(--diff-add-num) 32%, transparent); }
 .line.del .word { background: color-mix(in srgb, var(--diff-del-fg) 32%, transparent); }
 
-/* ── Side-by-side ── */
-.srow { display: flex; }
-.srow .side { flex: 1 1 50%; min-width: 0; display: flex; overflow-x: auto; border-left: 1px solid var(--line-soft); }
-.srow .side:first-child { border-left: none; }
-.srow .side .ln { width: 44px; flex: none; text-align: right; padding-right: var(--space-3); color: var(--text-faint); user-select: none; position: sticky; left: 0; background: inherit; }
-.srow .side .content { white-space: pre; flex: 1; user-select: text; color: var(--text); padding-right: var(--space-3); }
-.srow .side.add { background: var(--diff-add-bg); }
-.srow .side.add .ln { color: var(--diff-add-num); }
-.srow .side.del { background: var(--diff-del-bg); }
-.srow .side.empty { background: color-mix(in srgb, var(--line-soft) 40%, transparent); }
-.srow .side.add .word { background: color-mix(in srgb, var(--diff-add-num) 32%, transparent); }
-.srow .side.del .word { background: color-mix(in srgb, var(--diff-del-fg) 32%, transparent); }
+/* ── Side-by-side ──
+   Two panes, each its own horizontal scroller (a scrollbar per pane, pinned to
+   that pane's bottom), with vertical scroll synced in script so rows align. */
+.split-wrap { display: flex; height: 100%; min-height: 0; }
+.pane { flex: 1 1 50%; min-width: 0; overflow: auto; }
+.pane.pane-right { border-left: 1px solid var(--line-soft); }
+.pane-inner {
+  width: max-content; min-width: 100%;
+  font-family: var(--code-font); font-size: var(--code-font-size); line-height: var(--code-line-h);
+}
+.pline { display: flex; }
+.pline .ln { width: 44px; flex: none; text-align: right; padding-right: var(--space-3); color: var(--text-faint); user-select: none; }
+.pline .content { white-space: pre; flex: 1; user-select: text; color: var(--text); padding-right: var(--space-3); }
+.pline.add { background: var(--diff-add-bg); }
+.pline.add .ln { color: var(--diff-add-num); }
+.pline.del { background: var(--diff-del-bg); }
+.pline.empty { background: color-mix(in srgb, var(--line-soft) 40%, transparent); }
+.pline.add .word { background: color-mix(in srgb, var(--diff-add-num) 32%, transparent); }
+.pline.del .word { background: color-mix(in srgb, var(--diff-del-fg) 32%, transparent); }
 </style>
