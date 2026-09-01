@@ -7,6 +7,7 @@ import { listAiProviders, type AiConfig } from "./ai";
 import { listConnections, type ConnectionConfig } from "./accounts";
 import {
   applyTheme,
+  applyContrast,
   getTheme,
   persistThemeId,
   savedThemeId,
@@ -192,6 +193,7 @@ export function setThemeId(id: string) {
   const t = getTheme(id);
   if (!t) return;
   applyTheme(t);
+  applyContrast(t.mode, prefs.highContrast);
   appState.themeId = t.id;
   appState.theme = t.mode;
   persistThemeId(t.id);
@@ -215,11 +217,17 @@ export function initTheme() {
 }
 
 /* ── Misc preferences ─────────────────────────────────────────────── */
-export const prefs = reactive<{ reopenSession: boolean; ignoreWs: boolean; split: boolean }>({
+export const prefs = reactive<{ reopenSession: boolean; ignoreWs: boolean; split: boolean; highContrast: boolean }>({
   reopenSession: localStorage.getItem("plumb.reopenSession") !== "false", // default on
   ignoreWs: localStorage.getItem("plumb.ignoreWs") === "true",
   split: localStorage.getItem("plumb.diffSplit") === "true",
+  highContrast: localStorage.getItem("plumb.highContrast") === "true",
 });
+export function setHighContrast(v: boolean) {
+  prefs.highContrast = v;
+  localStorage.setItem("plumb.highContrast", String(v));
+  setThemeId(appState.themeId); // re-apply so toggling off restores theme text
+}
 export function setReopenSession(v: boolean) {
   prefs.reopenSession = v;
   localStorage.setItem("plumb.reopenSession", String(v));

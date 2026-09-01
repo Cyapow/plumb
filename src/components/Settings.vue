@@ -23,6 +23,7 @@ import {
   setReopenSession,
   setIgnoreWs,
   setDiffSplit,
+  setHighContrast,
   type SettingsSection,
 } from "../lib/ui";
 import { BUILTIN_THEMES, MODERNIST_BASE, type Theme, type TokenKey } from "../lib/themes";
@@ -334,6 +335,10 @@ function hex(v: string | undefined): string {
                 <label class="pref-row">
                   <input type="checkbox" :checked="prefs.split" @change="setDiffSplit(($event.target as HTMLInputElement).checked)" />
                   <span>Side-by-side diffs <em>— show old and new in two columns</em></span>
+                </label>
+                <label class="pref-row">
+                  <input type="checkbox" :checked="prefs.highContrast" @change="setHighContrast(($event.target as HTMLInputElement).checked)" />
+                  <span>High-contrast text <em>— boost text legibility on any theme</em></span>
                 </label>
               </div>
             </div>

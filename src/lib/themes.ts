@@ -212,6 +212,20 @@ export function applyTheme(t: Theme) {
   for (const [k, v] of Object.entries(t.vars)) el.style.setProperty(k, v);
 }
 
+// High-contrast text ramp — pushes the UI text + comment tokens toward the
+// extreme so low-contrast themes stay readable. Applied on top of the theme
+// (call after applyTheme); passing `on: false` is a no-op because applyTheme
+// has already restored the theme's own values.
+const CONTRAST: Record<"dark" | "light", Partial<Record<TokenKey, string>>> = {
+  dark: { "--text": "#ffffff", "--text-mid": "#dcdcdc", "--text-dim": "#b6b6b6", "--text-faint": "#8f8f8f", "--syn-comment": "#a9a9a9" },
+  light: { "--text": "#000000", "--text-mid": "#1c1c1c", "--text-dim": "#3a3a3a", "--text-faint": "#5c5c5c", "--syn-comment": "#4a4a4a" },
+};
+export function applyContrast(mode: "dark" | "light", on: boolean) {
+  if (!on) return;
+  const el = document.documentElement;
+  for (const [k, v] of Object.entries(CONTRAST[mode])) el.style.setProperty(k, v);
+}
+
 function makeCustom(d: { id: string; name: string; mode: "dark" | "light"; vars: Vars }): Theme {
   return theme(d.id, d.name, "Custom", d.mode, d.mode === "dark" ? "modernist-light" : "modernist-dark", d.vars);
 }
