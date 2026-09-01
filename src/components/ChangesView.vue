@@ -207,6 +207,16 @@ async function onLineAction(hunkIndex: number, lines: number[]) {
   }
 }
 
+// After staging/unstaging, the file may no longer have changes on the side
+// we're viewing (e.g. staged the whole file while on the Unstaged tab). Follow
+// the content to the side that still has it instead of showing "No changes".
+function reconcileMode() {
+  const e = selectedEntry.value;
+  if (!e) return;
+  if (diffMode.value === "unstaged" && !e.unstaged && e.staged) diffMode.value = "staged";
+  else if (diffMode.value === "staged" && !e.staged && e.unstaged) diffMode.value = "unstaged";
+}
+
 async function reload() {
   files.value = await workingStatus(props.repoPath);
   if (selected.value && !files.value.some((f) => f.path === selected.value)) {
@@ -214,6 +224,7 @@ async function reload() {
   } else if (!selected.value) {
     selected.value = files.value[0]?.path ?? null;
   }
+  reconcileMode();
 }
 
 watch(
