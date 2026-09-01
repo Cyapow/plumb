@@ -461,6 +461,8 @@ pub fn file_diff(path: String, file: String, staged: bool) -> Result<FileDiff> {
         apply_ignore_ws(&mut opts);
     opts.include_untracked(true);
     opts.recurse_untracked_dirs(true);
+    // Without this a new (untracked) file shows as a delta with no lines.
+    opts.show_untracked_content(true);
 
     let diff = if staged {
         let head_tree = match repo.head() {
@@ -531,6 +533,7 @@ fn file_patch_text(repo: &Repository, file: &str, staged: bool) -> Result<String
         apply_ignore_ws(&mut opts);
     opts.include_untracked(true);
     opts.recurse_untracked_dirs(true);
+    opts.show_untracked_content(true);
 
     let diff = if staged {
         let head_tree = match repo.head() {
