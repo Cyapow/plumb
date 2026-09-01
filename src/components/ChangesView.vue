@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { listen, type UnlistenFn } from "../lib/transport";
 import {
   workingStatus,
   stagePaths,
@@ -223,6 +224,17 @@ watch(
   },
   { immediate: true },
 );
+
+// Auto-refresh the working set when the repo changes on disk (external editor,
+// terminal git, a CLI commit). The backend debounces and emits "repo-changed".
+let unlistenRepo: UnlistenFn | undefined;
+onMounted(async () => {
+  unlistenRepo = await listen("repo-changed", () => {
+    reload();
+    diffRefresh.value++; // refresh the open diff too, in case its file changed
+  });
+});
+onUnmounted(() => unlistenRepo?.());
 
 async function toggle(entry: StatusEntry) {
   error.value = null;

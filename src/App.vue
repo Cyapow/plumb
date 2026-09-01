@@ -808,6 +808,9 @@ async function revalidateTab(path: string) {
     repo.value = r;
     branches.value = b;
     status.value = s;
+    // The fs watcher has a single slot; re-point it at the tab we switched to
+    // so external edits/commits here emit "repo-changed".
+    watchRepo(path).catch(() => {});
     // Only rebuild the commit list if the tip actually moved, so switching
     // between unchanged tabs doesn't discard how far the user had scrolled.
     if (c[0]?.id !== commits.value[0]?.id) {
