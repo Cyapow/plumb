@@ -6,8 +6,21 @@ mod secrets;
 mod serve;
 mod watcher;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use tauri::menu::{AboutMetadata, MenuBuilder, MenuItem, SubmenuBuilder};
 use tauri::{AppHandle, Runtime};
+
+/// Set by the genuine-quit paths (tray "Quit Plumb", ⌘⇧Q) before `app.exit()`,
+/// so the ExitRequested interceptor — which otherwise keeps the menu-bar agent
+/// alive on window close / ⌘Q — lets a real quit through.
+static QUITTING: AtomicBool = AtomicBool::new(false);
+
+fn request_quit<R: Runtime>(app: &AppHandle<R>) {
+    QUITTING.store(true, Ordering::SeqCst);
+    serve::clear_discovery();
+    app.exit(0);
+}
 
 /// Build the native application menu. Custom items carry ids that the frontend
 /// receives via the "menu-action" event; predefined items (copy, quit, …) are
@@ -256,10 +269,7 @@ fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
     let mut builder = TrayIconBuilder::new().tooltip("Plumb — serving").menu(&menu).on_menu_event(|app, event| {
         match event.id().0.as_str() {
-            "tray_quit" => {
-                serve::clear_discovery();
-                app.exit(0);
-            }
+            "tray_quit" => request_quit(app),
             "tray_open" => show_main(app),
             _ => {}
         }
@@ -360,10 +370,7 @@ pub fn run() {
                         let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
                     }
                     // ⌘⇧Q → a genuine quit (matches the tray "Quit Plumb").
-                    "app_quit" => {
-                        serve::clear_discovery();
-                        app.exit(0);
-                    }
+                    "app_quit" => request_quit(app),
                     other => {
                         let _ = app.emit("menu-action", other.to_string());
                     }
@@ -541,16 +548,26 @@ pub fn run() {
         .run(|app, event| match event {
             // ⌘Q (and last-window-close) request an app exit. Keep the menu-bar
             // agent alive instead so editors stay connected — hide to the tray.
-            // A real quit comes from the tray "Quit Plumb" item, which calls
-            // app.exit() and fires RunEvent::Exit directly (below), not this.
+            // A genuine quit (tray "Quit Plumb" / ⌘⇧Q) sets QUITTING first, so
+            // we let it through; app.exit() also routes here on this platform.
             tauri::RunEvent::ExitRequested { api, .. } => {
-                api.prevent_exit();
-                use tauri::Manager as _;
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.hide();
+                if !QUITTING.load(Ordering::SeqCst) {
+                    api.prevent_exit();
+                    use tauri::Manager as _;
+                    if let Some(win) = app.get_webview_window("main") {
+                        let _ = win.hide();
+                    }
+                    #[cfg(target_os = "macos")]
+                    let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 }
-                #[cfg(target_os = "macos")]
-                let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            }
+            // Clicking the Dock icon (window hidden, app still in the Dock)
+            // fires Reopen on macOS — bring the window back.
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { has_visible_windows, .. } => {
+                if !has_visible_windows {
+                    show_main(app);
+                }
             }
             // Clear the agent's advertisement on a genuine exit so editors don't
             // find a stale server.
