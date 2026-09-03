@@ -98,7 +98,11 @@ const tag = `plumb-v${next}`;
 const run = (cmd) => execSync(cmd, { cwd: root, stdio: "inherit" });
 run(`git add "${p.tauri}" "${p.pkg}" "${p.cargo}" "${p.lock}"`);
 run(`git commit -m "chore(release): v${next}"`);
-// Annotated tag so `--follow-tags` actually pushes it (lightweight tags are skipped).
 run(`git tag -a ${tag} -m "Plumb v${next}"`);
-run(`git push --follow-tags`);
+// Push the branch and the tag as SEPARATE events. When both land in one push
+// (e.g. `--follow-tags`), GitHub occasionally delivers only the branch's push
+// event and drops the tag's, so the tag-triggered Release workflow never
+// starts. Pushing the tag on its own guarantees its `push` event fires.
+run(`git push`);
+run(`git push origin ${tag}`);
 console.log(`\n✅ Released ${tag}. Watch the build: https://github.com/Cyapow/plumb/actions`);
