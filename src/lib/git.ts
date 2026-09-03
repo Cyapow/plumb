@@ -54,8 +54,24 @@ export function initRepo(path: string, branch?: string): Promise<void> {
 export function openInTerminal(path: string): Promise<void> {
   return invoke("open_in_terminal", { path });
 }
+export interface EditorInfo {
+  id: string;
+  name: string;
+  installed: boolean;
+}
+export function listEditors(): Promise<EditorInfo[]> {
+  return invoke("list_editors");
+}
+// The chosen editor (a known id, or a custom app/binary path) is stored
+// per-machine in localStorage and passed through on every open.
+export function preferredEditor(): string {
+  return localStorage.getItem("plumb.editorId") || "";
+}
+export function setPreferredEditor(v: string) {
+  localStorage.setItem("plumb.editorId", v);
+}
 export function openInEditor(path: string): Promise<void> {
-  return invoke("open_in_editor", { path });
+  return invoke("open_in_editor", { path, editor: preferredEditor() || null });
 }
 export function addToGitignore(path: string, pattern: string): Promise<void> {
   return invoke("add_to_gitignore", { path, pattern });

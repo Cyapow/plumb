@@ -142,7 +142,7 @@ function fmtDate(unix: number): string {
 </template>
 
 <style scoped>
-.panel { flex: 1; display: flex; flex-direction: column; min-height: 0; background: var(--surface); }
+.panel { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--surface); }
 .panel-head {
   height: 40px;
   flex: none;
@@ -157,19 +157,22 @@ function fmtDate(unix: number): string {
 .grow { flex: 1; }
 .close { width: 30px; height: 26px; background: var(--raised); border: 1px solid var(--line); cursor: pointer; }
 
-.panel-body { flex: 1; overflow-y: auto; padding: var(--space-4); }
+/* Only the file list scrolls sideways; everything else wraps so a long token
+   (e.g. a URL in the body) can't drag the whole panel off to the right. */
+.panel-body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: var(--space-4); }
 .panel-body.loading { color: var(--text-faint); font-size: 12.5px; }
 
-.summary { font-size: 14px; font-weight: 600; line-height: 1.4; margin-bottom: var(--space-3); }
+.summary { font-size: 14px; font-weight: 600; line-height: 1.4; margin-bottom: var(--space-3); overflow-wrap: anywhere; }
 .author { display: flex; gap: var(--space-2); align-items: center; margin-bottom: var(--space-3); }
 .avatar {
   width: 24px; height: 24px; flex: none;
   display: flex; align-items: center; justify-content: center;
   background: var(--raised); font-size: 9px; font-weight: 700; color: var(--text-mid);
 }
-.who .name { font-size: 11px; color: var(--text-mid); overflow: hidden; text-overflow: ellipsis; }
+.who { min-width: 0; }
+.who .name { font-size: 11px; color: var(--text-mid); overflow-wrap: anywhere; }
 .who .when { font-size: 10.5px; color: var(--text-faint); margin-top: 2px; }
-.body { font-size: 12px; color: var(--text-mid); line-height: 1.55; white-space: pre-wrap; margin: 0 0 var(--space-4); }
+.body { font-size: 12px; color: var(--text-mid); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 var(--space-4); }
 
 .explain { margin-bottom: var(--space-4); }
 .explain-btn {
@@ -192,7 +195,7 @@ function fmtDate(unix: number): string {
 .explain-out {
   margin-top: var(--space-2); padding: var(--space-3);
   background: var(--bg); border: 1px solid var(--line);
-  font-size: 12px; color: var(--text); line-height: 1.6; white-space: pre-wrap;
+  font-size: 12px; color: var(--text); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere;
   user-select: text;
 }
 .cursor { color: var(--accent); animation: blink 1s steps(2) infinite; }
@@ -206,8 +209,13 @@ function fmtDate(unix: number): string {
 .files-label .count { color: var(--text-faint); font-size: 10.5px; }
 .files-label .hint { margin-left: auto; font-size: 10px; color: var(--text-faint); text-transform: none; letter-spacing: 0; }
 
+/* Long paths stay readable: the list scrolls horizontally and rows size to
+   their content, so nothing is silently clipped. */
+.files { overflow-x: auto; scrollbar-width: none; }
+.files::-webkit-scrollbar { display: none; }
 .file-row {
   height: 30px;
+  min-width: max-content;
   display: flex; align-items: center; gap: var(--space-2);
   font-size: 11.5px; color: var(--text-mid);
   cursor: pointer;
@@ -216,7 +224,7 @@ function fmtDate(unix: number): string {
 .file-row:hover { background: color-mix(in srgb, var(--raised) 60%, transparent); color: var(--text); }
 .file-row:hover .go { opacity: 1; }
 .file-row .code { width: 12px; flex: none; font-weight: 700; }
-.file-row .path { flex: 1; }
+.file-row .path { flex: 1; white-space: nowrap; }
 .file-row .go { flex: none; opacity: 0; color: var(--text-faint); }
 .code.add { color: var(--lane-1); }
 .code.mod { color: var(--lane-2); }

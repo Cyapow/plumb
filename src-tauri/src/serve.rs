@@ -477,7 +477,8 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, Strin
         "init_repo" => ok(git::init_repo(s("path"), sopt("branch"))),
         "initial_commit" => ok(block_on(git::initial_commit(s("path"), s("message")))),
         "clone_repo" => ok(block_on(git::clone_repo(s("url"), s("parentDir")))),
-        "open_in_editor" => ok(git::open_in_editor(s("path"))),
+        "open_in_editor" => ok(git::open_in_editor(s("path"), sopt("editor"))),
+        "list_editors" => ok(git::list_editors()),
         "open_in_terminal" => ok(git::open_in_terminal(s("path"))),
 
         // ── Git: staging (hunk / line) ──
