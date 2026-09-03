@@ -27,20 +27,46 @@ import {
   type SettingsSection,
 } from "../lib/ui";
 import { BUILTIN_THEMES, MODERNIST_BASE, type Theme, type TokenKey } from "../lib/themes";
-import { getAutostart, setAutostart, installVscodeExtension } from "../lib/git";
-import { openUrl } from "../lib/native";
+import { getAutostart, setAutostart, installVscodeExtension, listEditors, preferredEditor, setPreferredEditor, type EditorInfo } from "../lib/git";
+import { openUrl, openFile } from "../lib/native";
 import { toast } from "../lib/ui";
 import AiProvidersPanel from "./AiProvidersPanel.vue";
 import ConnectionsPanel from "./ConnectionsPanel.vue";
 import ActionsPanel from "./ActionsPanel.vue";
 import PlumbMark from "./PlumbMark.vue";
 
+// External editor picker (Integrations tab).
+const editors = ref<EditorInfo[]>([]);
+const editorId = ref(preferredEditor());
+const customEditor = computed(() => (editorId.value.includes("/") || editorId.value.includes("\\") ? editorId.value : ""));
+async function loadEditors() {
+  try {
+    editors.value = await listEditors();
+  } catch {
+    editors.value = [];
+  }
+}
+function chooseEditor(id: string) {
+  editorId.value = id;
+  setPreferredEditor(id);
+}
+async function chooseCustomEditor() {
+  const p = await openFile("Choose an editor app or binary");
+  if (p) chooseEditor(p);
+}
+function baseName(p: string): string {
+  return p.split("/").filter(Boolean).pop()?.replace(/\.app$/, "") || p;
+}
+
 // Start-at-login for the background server (Integrations tab).
 const autostart = ref(false);
 watch(
   () => settings.section,
   (s) => {
-    if (s === "integrations") getAutostart().then((v) => (autostart.value = v)).catch(() => {});
+    if (s === "integrations") {
+      getAutostart().then((v) => (autostart.value = v)).catch(() => {});
+      loadEditors();
+    }
   },
   { immediate: true },
 );
@@ -158,6 +184,34 @@ function hex(v: string | undefined): string {
             <ActionsPanel v-else-if="settings.section === 'actions'" />
 
             <div v-else-if="settings.section === 'integrations'" class="integrations">
+              <div class="int-block">
+                <div class="row-title">Open in editor</div>
+                <div class="row-sub">
+                  Which editor “Open in editor” uses. Installed editors are shown normally; others are dimmed
+                  but still selectable. Pick <b>Custom…</b> to choose any app or binary.
+                </div>
+                <div class="editor-grid">
+                  <button
+                    class="ed-chip"
+                    :class="{ on: editorId === '' }"
+                    @click="chooseEditor('')"
+                  >System default</button>
+                  <button
+                    v-for="e in editors"
+                    :key="e.id"
+                    class="ed-chip"
+                    :class="{ on: editorId === e.id, dim: !e.installed }"
+                    :title="e.installed ? '' : 'Not detected — select anyway if you have it'"
+                    @click="chooseEditor(e.id)"
+                  >{{ e.name }}</button>
+                  <button
+                    class="ed-chip custom"
+                    :class="{ on: !!customEditor }"
+                    @click="chooseCustomEditor"
+                  >{{ customEditor ? baseName(customEditor) : "Custom…" }}</button>
+                </div>
+              </div>
+
               <div class="row-title">Editor panel</div>
               <div class="row-sub">
                 Plumb can run inside VS Code and JetBrains as a panel, backed by a small local
@@ -397,6 +451,16 @@ function hex(v: string | undefined): string {
 .integrations .int-p { font-size: 11.5px; color: var(--text-dim); line-height: 1.5; margin-top: 3px; }
 .integrations .int-p code { font-size: 10.5px; background: var(--surface); border: 1px solid var(--line-soft); padding: 0 4px; }
 .integrations .install-row { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-3); }
+.editor-grid { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-3); }
+.ed-chip {
+  height: 30px; padding: 0 12px; font-size: 12px; cursor: pointer;
+  background: var(--raised); border: 1px solid var(--line); color: var(--text);
+}
+.ed-chip:hover { border-color: var(--text-faint); }
+.ed-chip.on { background: var(--accent); color: var(--accent-on); border-color: var(--accent); font-weight: 700; }
+.ed-chip.dim { opacity: 0.45; }
+.ed-chip.dim.on { opacity: 1; }
+.ed-chip.custom { border-style: dashed; }
 .integrations .btn-accent { display: inline-flex; align-items: center; gap: var(--space-2); height: 32px; padding: 0 14px; background: var(--accent); color: var(--accent-on); border: 1px solid var(--accent); font-size: 12.5px; font-weight: 700; cursor: pointer; }
 .integrations .btn-accent:disabled { opacity: 0.7; }
 .integrations .btn { height: 32px; padding: 0 14px; background: var(--raised); border: 1px solid var(--line); color: var(--text); font-size: 12.5px; cursor: pointer; }

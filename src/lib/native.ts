@@ -29,3 +29,13 @@ export async function openFolder(title = "Open folder"): Promise<string | null> 
   const res = await tauriDialogOpen({ directory: true, multiple: false, title });
   return typeof res === "string" ? res : null;
 }
+
+/** Pick a single file (e.g. an app bundle or binary). */
+export async function openFile(title = "Choose a file"): Promise<string | null> {
+  if (isServed) {
+    const p = await promptText({ title, label: "File path", placeholder: "/path/to/app" });
+    return p && p.trim() ? p.trim() : null;
+  }
+  const res = await tauriDialogOpen({ directory: false, multiple: false, title });
+  return typeof res === "string" ? res : null;
+}

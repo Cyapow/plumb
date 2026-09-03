@@ -1690,11 +1690,122 @@ pub fn open_in_terminal(path: String) -> Result<()> {
     }
 }
 
-/// Open the repo (or a file) in an editor — VS Code if present, else the OS default.
+/// Editors we know how to launch and detect. Fields: (id, display name, macOS
+/// app name for `open -a`, CLI binary for PATH-based launch/detection).
+const KNOWN_EDITORS: &[(&str, &str, &str, &str)] = &[
+    ("vscode", "VS Code", "Visual Studio Code", "code"),
+    ("vscode-insiders", "VS Code Insiders", "Visual Studio Code - Insiders", "code-insiders"),
+    ("cursor", "Cursor", "Cursor", "cursor"),
+    ("windsurf", "Windsurf", "Windsurf", "windsurf"),
+    ("zed", "Zed", "Zed", "zed"),
+    ("sublime", "Sublime Text", "Sublime Text", "subl"),
+    ("intellij", "IntelliJ IDEA", "IntelliJ IDEA", "idea"),
+    ("intellij-ce", "IntelliJ IDEA CE", "IntelliJ IDEA CE", "idea"),
+    ("pycharm", "PyCharm", "PyCharm", "pycharm"),
+    ("webstorm", "WebStorm", "WebStorm", "webstorm"),
+    ("phpstorm", "PhpStorm", "PhpStorm", "phpstorm"),
+    ("rubymine", "RubyMine", "RubyMine", "rubymine"),
+    ("goland", "GoLand", "GoLand", "goland"),
+    ("clion", "CLion", "CLion", "clion"),
+    ("rider", "Rider", "Rider", "rider"),
+    ("datagrip", "DataGrip", "DataGrip", "datagrip"),
+    ("android-studio", "Android Studio", "Android Studio", "studio"),
+    ("fleet", "Fleet", "Fleet", "fleet"),
+    ("xcode", "Xcode", "Xcode", "xcode"),
+];
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorInfo {
+    pub id: String,
+    pub name: String,
+    pub installed: bool,
+}
+
+#[cfg(target_os = "macos")]
+fn editor_installed(mac_app: &str, _bin: &str) -> bool {
+    for base in ["/Applications", "/System/Applications"] {
+        if std::path::Path::new(&format!("{base}/{mac_app}.app")).exists() {
+            return true;
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        if std::path::Path::new(&format!("{home}/Applications/{mac_app}.app")).exists() {
+            return true;
+        }
+    }
+    // Spotlight finds apps anywhere (e.g. JetBrains Toolbox installs).
+    std::process::Command::new("mdfind")
+        .arg(format!("kMDItemFSName == '{mac_app}.app'"))
+        .output()
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn editor_installed(_mac_app: &str, bin: &str) -> bool {
+    #[cfg(target_os = "windows")]
+    let (prog, arg) = ("where", bin);
+    #[cfg(not(target_os = "windows"))]
+    let (prog, arg) = ("which", bin);
+    std::process::Command::new(prog)
+        .arg(arg)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// The known editors with an `installed` flag, for the settings picker.
 #[tauri::command]
-pub fn open_in_editor(path: String) -> Result<()> {
-    // `code` is rarely on a GUI-launched app's PATH on macOS, so use `open -a`
-    // there; on Windows/Linux `code` is usually available.
+pub fn list_editors() -> Result<Vec<EditorInfo>> {
+    Ok(KNOWN_EDITORS
+        .iter()
+        .filter(|(id, ..)| !(cfg!(not(target_os = "macos")) && *id == "xcode"))
+        .map(|(id, name, mac_app, bin)| EditorInfo {
+            id: id.to_string(),
+            name: name.to_string(),
+            installed: editor_installed(mac_app, bin),
+        })
+        .collect())
+}
+
+/// Launch a chosen editor (or a custom app/binary path) at `path`.
+fn launch_editor(editor: &str, path: &str) -> bool {
+    // A custom path: an .app bundle or a binary the user picked.
+    if editor.contains('/') || editor.contains('\\') {
+        #[cfg(target_os = "macos")]
+        if editor.ends_with(".app") {
+            return ran_ok(std::process::Command::new("open").args(["-a", editor, path]));
+        }
+        return ran_ok(std::process::Command::new(editor).arg(path));
+    }
+    if let Some((_, _, mac_app, bin)) = KNOWN_EDITORS.iter().find(|(id, ..)| *id == editor) {
+        let _ = (mac_app, bin);
+        #[cfg(target_os = "macos")]
+        {
+            if ran_ok(std::process::Command::new("open").args(["-a", mac_app, path])) {
+                return true;
+            }
+            return ran_ok(std::process::Command::new(bin).arg(path));
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            return ran_ok(std::process::Command::new(bin).arg(path));
+        }
+    }
+    false
+}
+
+/// Open the repo (or a file) in the chosen editor; falls back to VS Code then
+/// the OS default when none is set or the chosen one fails to launch.
+#[tauri::command]
+pub fn open_in_editor(path: String, editor: Option<String>) -> Result<()> {
+    if let Some(ed) = editor.as_deref().filter(|s| !s.trim().is_empty()) {
+        if launch_editor(ed, &path) {
+            return Ok(());
+        }
+    }
+    // Fallback: VS Code if present, else the OS default handler.
     #[cfg(target_os = "macos")]
     {
         if !ran_ok(std::process::Command::new("open").args(["-a", "Visual Studio Code", &path])) {

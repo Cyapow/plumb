@@ -695,6 +695,26 @@ const colorFor = (name: string) => branchColors.value.get(name) ?? "var(--text-d
 const collapsedSections = reactive<Record<string, boolean>>({});
 const toggleSection = (key: string) => (collapsedSections[key] = !collapsedSections[key]);
 
+// Each list section (branches, remotes, tags, stashes) is capped so one huge
+// list can't crowd out the others; the cap is drag-resizable and persisted.
+const secHeights = reactive<Record<string, number>>(JSON.parse(localStorage.getItem("plumb.secHeights") || "{}"));
+const secH = (id: string) => secHeights[id] ?? 240;
+function startSecResize(id: string, e: PointerEvent) {
+  e.preventDefault();
+  const startY = e.clientY;
+  const startH = secH(id);
+  const move = (ev: PointerEvent) => {
+    secHeights[id] = Math.max(80, Math.min(900, startH + (ev.clientY - startY)));
+  };
+  const up = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    localStorage.setItem("plumb.secHeights", JSON.stringify(secHeights));
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+}
+
 // Shared with the recursive BranchTree.
 provide("branchActions", {
   checkout: (name: string) => {
@@ -1754,7 +1774,10 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
             <span class="sect-chev">{{ collapsedSections.branches ? "▸" : "▾" }}</span>
             <span class="section-label">Branches</span>
           </div>
-          <BranchTree v-if="!collapsedSections.branches" :nodes="localTree" />
+          <template v-if="!collapsedSections.branches">
+            <div class="sec-list" :style="{ maxHeight: secH('branches') + 'px' }"><BranchTree :nodes="localTree" /></div>
+            <div class="sec-grip" title="Drag to resize" @pointerdown="startSecResize('branches', $event)"></div>
+          </template>
         </nav>
 
         <nav class="side-section" v-if="remoteTree.length || (!sideFilter && remotes.length)">
@@ -1764,15 +1787,18 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
             <span class="plus" title="Manage remotes" @click.stop="remotesOpen = true">⚙</span>
           </div>
           <template v-if="!collapsedSections.remotes">
-            <BranchTree v-if="remoteTree.length" :nodes="remoteTree" />
-            <!-- Configured remotes with no fetched branches yet (e.g. an empty
-                 origin) — still show the connection so it's visible. -->
-            <template v-else>
-              <div v-for="r in remotes" :key="r.name" class="side-row remote-row" :title="r.url">
-                <span class="ico">⛁</span>{{ r.name }}
-                <span class="remote-host mono">{{ shortHost(r.url) }}</span>
-              </div>
-            </template>
+            <div class="sec-list" :style="{ maxHeight: secH('remotes') + 'px' }">
+              <BranchTree v-if="remoteTree.length" :nodes="remoteTree" />
+              <!-- Configured remotes with no fetched branches yet (e.g. an empty
+                   origin) — still show the connection so it's visible. -->
+              <template v-else>
+                <div v-for="r in remotes" :key="r.name" class="side-row remote-row" :title="r.url">
+                  <span class="ico">⛁</span>{{ r.name }}
+                  <span class="remote-host mono">{{ shortHost(r.url) }}</span>
+                </div>
+              </template>
+            </div>
+            <div class="sec-grip" title="Drag to resize" @pointerdown="startSecResize('remotes', $event)"></div>
           </template>
         </nav>
 
@@ -1783,17 +1809,20 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
             <span class="plus" title="Stash all changes" @click.stop="doStash">+</span>
           </div>
           <template v-if="!collapsedSections.stashes">
-            <div
-              v-for="s in fStashes"
-              :key="s.index"
-              class="side-row mono muted clickable"
-              :title="s.message"
-              @click="stashMenu($event, s)"
-              @contextmenu="stashMenu($event, s)"
-            >
-              <span class="ellipsis">stash@{{ s.index }}: {{ s.message.replace(/^WIP on /, "") }}</span>
+            <div class="sec-list" :style="{ maxHeight: secH('stashes') + 'px' }">
+              <div
+                v-for="s in fStashes"
+                :key="s.index"
+                class="side-row mono muted clickable"
+                :title="s.message"
+                @click="stashMenu($event, s)"
+                @contextmenu="stashMenu($event, s)"
+              >
+                <span class="ellipsis">stash@{{ s.index }}: {{ s.message.replace(/^WIP on /, "") }}</span>
+              </div>
+              <div v-if="!fStashes.length" class="conn-empty">No stashes.</div>
             </div>
-            <div v-if="!fStashes.length" class="conn-empty">No stashes.</div>
+            <div v-if="fStashes.length" class="sec-grip" title="Drag to resize" @pointerdown="startSecResize('stashes', $event)"></div>
           </template>
         </nav>
 
@@ -1803,18 +1832,21 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
             <span class="section-label">Tags</span>
             <span v-if="tags.length" class="tag-count mono">{{ fTags.length }}</span>
           </div>
-          <div v-if="!collapsedSections.tags" class="tag-scroll">
-            <div
-              v-for="t in fTags"
-              :key="t.name"
-              class="side-row mono muted clickable"
-              :title="t.name"
-              @click="scrollToCommit(t.target)"
-              @contextmenu="tagMenu($event, t)"
-            >
-              <span class="ellipsis">⌾ {{ t.name }}</span>
+          <template v-if="!collapsedSections.tags">
+            <div class="sec-list" :style="{ maxHeight: secH('tags') + 'px' }">
+              <div
+                v-for="t in fTags"
+                :key="t.name"
+                class="side-row mono muted clickable"
+                :title="t.name"
+                @click="scrollToCommit(t.target)"
+                @contextmenu="tagMenu($event, t)"
+              >
+                <span class="ellipsis">⌾ {{ t.name }}</span>
+              </div>
             </div>
-          </div>
+            <div class="sec-grip" title="Drag to resize" @pointerdown="startSecResize('tags', $event)"></div>
+          </template>
         </nav>
 
       </aside>
@@ -2294,11 +2326,20 @@ kbd {
 .side-filter input::placeholder { color: var(--text-faint); }
 .side-filter .sf-x { flex: none; width: 16px; height: 16px; background: var(--raised); border: 1px solid var(--line); color: var(--text-dim); font-size: 9px; cursor: pointer; line-height: 1; }
 .tag-count { margin-left: auto; font-size: 10px; color: var(--accent); }
-/* Tags can be numerous — cap the height and scroll within the section so the
- * rest of the sidebar stays reachable. */
-.tag-scroll { max-height: 240px; overflow-y: auto; }
 
 .side-section { padding: var(--space-4) 0 0; }
+/* A capped, drag-resizable, independently scrolling list so one huge section
+   can't crowd out the rest. Scrolls both ways (long names read via horizontal
+   scroll); scrollbars are hidden but still work. */
+.sec-list {
+  overflow: auto;
+  scrollbar-width: none;
+}
+.sec-list::-webkit-scrollbar { display: none; }
+.sec-list :deep(.row) { min-width: max-content; }
+.sec-grip { height: 7px; flex: none; cursor: ns-resize; }
+.sec-grip:hover { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+.sec-grip:active { background: color-mix(in srgb, var(--accent) 55%, transparent); }
 .side-section .section-label { padding: 0 var(--space-3) var(--space-2); }
 /* Collapsible section header — provides the single left inset. */
 .sect-head { display: flex; align-items: center; padding: 0 var(--space-3) var(--space-2); cursor: pointer; }
@@ -2308,6 +2349,7 @@ kbd {
 .sect-head .plus { margin-left: auto; color: var(--accent); font-size: 16px; line-height: 1; }
 .side-row {
   height: var(--row-sidebar);
+  min-width: max-content;
   display: flex;
   align-items: center;
   gap: var(--space-2);

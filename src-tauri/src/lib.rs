@@ -399,6 +399,7 @@ pub fn run() {
             git::init_repo,
             git::open_in_terminal,
             git::open_in_editor,
+            git::list_editors,
             git::add_to_gitignore,
             git::reword_commit,
             git::set_diff_ignore_ws,
