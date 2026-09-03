@@ -38,7 +38,13 @@
     ],
     "macOS": {
       "signingIdentity": "Plumb Local Dev",
-      "entitlements": "entitlements.plist"
+      "entitlements": "entitlements.plist",
+      "dmg": {
+        "background": "dmg-background.png",
+        "windowSize": { "width": 660, "height": 400 },
+        "appPosition": { "x": 180, "y": 175 },
+        "applicationFolderPosition": { "x": 480, "y": 175 }
+      }
     }
   }
 }
