@@ -4,7 +4,7 @@
 // caller pushes.
 import { computed, ref, watch } from "vue";
 import { addRemote } from "../lib/git";
-import { createRemoteRepo } from "../lib/accounts";
+import { createRemoteRepo, listNamespaces, type Namespace } from "../lib/accounts";
 import { connectionsStore, refreshConnections, openSettings, toast } from "../lib/ui";
 
 const open = defineModel<boolean>({ required: true });
@@ -21,6 +21,19 @@ const error = ref<string | null>(null);
 
 const connections = computed(() => connectionsStore.config.connections);
 
+// Where the new repo lands. Left to the provider, this is always the personal
+// namespace — so the group/org you meant is offered explicitly.
+const namespaces = ref<Namespace[]>([]);
+const namespaceId = ref("");
+const loadingNamespaces = ref(false);
+
+const fullPath = computed(() => {
+  const owner = namespaces.value.find((n) => n.id === namespaceId.value)?.path;
+  const repo = name.value.trim();
+  if (!repo) return "";
+  return owner ? `${owner}/${repo}` : repo;
+});
+
 watch(open, (o) => {
   if (!o) return;
   error.value = "";
@@ -32,6 +45,23 @@ watch(open, (o) => {
   });
 });
 
+// The list is per-account, so it reloads whenever the chosen account changes.
+watch([accountId, open], async ([id, isOpen]) => {
+  namespaces.value = [];
+  namespaceId.value = "";
+  if (!id || !isOpen) return;
+  loadingNamespaces.value = true;
+  try {
+    namespaces.value = await listNamespaces(id);
+    // Default to the account's own space — the provider's behaviour, now visible.
+    namespaceId.value = (namespaces.value.find((n) => n.kind === "user") ?? namespaces.value[0])?.id ?? "";
+  } catch {
+    namespaces.value = [];
+  } finally {
+    loadingNamespaces.value = false;
+  }
+});
+
 async function confirm() {
   error.value = null;
   busy.value = true;
@@ -40,7 +70,7 @@ async function confirm() {
     if (mode.value === "create") {
       if (!accountId.value) throw new Error("Pick an account.");
       if (!name.value.trim()) throw new Error("Enter a repository name.");
-      const repo = await createRemoteRepo(accountId.value, name.value.trim(), isPrivate.value);
+      const repo = await createRemoteRepo(accountId.value, name.value.trim(), isPrivate.value, namespaceId.value);
       remoteUrl = repo.sshUrl || repo.httpUrl;
       toast("Repository created", repo.name);
     }
@@ -92,9 +122,20 @@ async function confirm() {
                 </select>
               </label>
               <label class="field">
+                <span>Owner</span>
+                <select v-model="namespaceId" :disabled="loadingNamespaces || !namespaces.length">
+                  <option v-if="loadingNamespaces" value="">Loading…</option>
+                  <option v-else-if="!namespaces.length" value="">Personal account</option>
+                  <option v-for="n in namespaces" :key="n.id || 'self'" :value="n.id">
+                    {{ n.path }}{{ n.kind === "user" ? " (personal)" : "" }}
+                  </option>
+                </select>
+              </label>
+              <label class="field">
                 <span>Repository name</span>
                 <input v-model="name" spellcheck="false" />
               </label>
+              <p v-if="fullPath" class="preview mono">{{ fullPath }}</p>
               <label class="check"><input type="checkbox" v-model="isPrivate" /> Private</label>
             </template>
           </template>
@@ -130,6 +171,7 @@ async function confirm() {
 .no-account { font-size: 12.5px; color: var(--text-dim); margin-bottom: var(--space-3); }
 .key-link { color: var(--accent); cursor: pointer; }
 .err { color: var(--accent); font-size: 11px; margin: 0 0 var(--space-3); }
+.preview { font-size: 11.5px; color: var(--text-mid); margin: -4px 0 var(--space-3); }
 .actions { display: flex; gap: var(--space-2); margin-top: var(--space-2); }
 .btn-accent { height: 34px; padding: 0 18px; display: flex; align-items: center; gap: var(--space-2); background: var(--accent); color: var(--accent-on); border: 1px solid var(--accent); font-weight: 700; font-size: 12.5px; cursor: pointer; }
 .btn-accent:disabled { opacity: 0.6; }

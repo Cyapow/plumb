@@ -84,6 +84,19 @@ export interface PrList {
   items: PullRequest[];
 }
 
+export interface Namespace {
+  /** Provider-specific target: GitLab namespace id, GitHub org login, Azure project. Empty = the user's own space. */
+  id: string;
+  /** What the new repo's path starts with, e.g. "acme/platform". */
+  path: string;
+  kind: string; // "user" | "group"
+}
+
+/** Groups/orgs/projects this account can create a repository in. */
+export function listNamespaces(connectionId: string): Promise<Namespace[]> {
+  return invoke("list_namespaces", { connectionId });
+}
+
 export function listPullRequests(repoPath: string): Promise<PrList> {
   return invoke("list_pull_requests", { repoPath });
 }
@@ -196,6 +209,7 @@ export function createRemoteRepo(
   connectionId: string,
   name: string,
   isPrivate: boolean,
+  namespace?: string,
 ): Promise<RepoRef> {
-  return invoke("create_remote_repo", { connectionId, name, private: isPrivate });
+  return invoke("create_remote_repo", { connectionId, name, private: isPrivate, namespace: namespace || null });
 }

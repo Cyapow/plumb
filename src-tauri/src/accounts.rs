@@ -2021,6 +2021,126 @@ pub async fn list_account_repos(app: AppHandle, connection_id: String) -> Result
     .map_err(|e| AccountError::Msg(e.to_string()))?
 }
 
+/// Somewhere a new repository can live: the account's own space, or a group,
+/// organisation, or Azure project it belongs to.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Namespace {
+    /// What the provider needs to target it — GitLab's numeric namespace id,
+    /// GitHub's org login, Azure's project name. Empty means the user's own
+    /// space, which is what every provider defaults to.
+    pub id: String,
+    /// What the new repository's path will start with, e.g. "acme/platform".
+    pub path: String,
+    /// "user" | "group"
+    pub kind: String,
+}
+
+/// Where this account can create repositories. Offered in the publish dialog so
+/// a repo meant for the company group doesn't silently land in a personal one.
+#[tauri::command]
+pub async fn list_namespaces(app: AppHandle, connection_id: String) -> Result<Vec<Namespace>> {
+    let cfg = load(&app)?;
+    let conn = cfg
+        .connections
+        .iter()
+        .find(|c| c.id == connection_id)
+        .cloned()
+        .ok_or_else(|| AccountError::Msg("Connection not found.".into()))?;
+    let token = access_token(&conn.id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let own = Namespace { id: String::new(), path: conn.username.clone(), kind: "user".into() };
+        Ok(match conn.provider.as_str() {
+            "github" => std::iter::once(own).chain(github_orgs(&conn.base_url, &token)).collect(),
+            "gitlab" => gitlab_namespaces(&conn.base_url, &token),
+            "azure" => azure_projects(&conn.base_url, &token),
+            _ => vec![own],
+        })
+    })
+    .await
+    .map_err(|e| AccountError::Msg(e.to_string()))?
+}
+
+fn github_orgs(base: &str, token: &str) -> Vec<Namespace> {
+    let url = format!("{}/user/orgs?per_page=100", base.trim_end_matches('/'));
+    let json: serde_json::Value = match ureq::get(&url)
+        .set("authorization", &format!("Bearer {token}"))
+        .set("user-agent", "Plumb")
+        .set("accept", "application/vnd.github+json")
+        .timeout(Duration::from_secs(20))
+        .call()
+        .ok()
+        .and_then(|r| r.into_json().ok())
+    {
+        Some(j) => j,
+        None => return Vec::new(),
+    };
+    json.as_array()
+        .map(|orgs| {
+            orgs.iter()
+                .filter_map(|o| o["login"].as_str())
+                .map(|login| Namespace { id: login.to_string(), path: login.to_string(), kind: "group".into() })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// GitLab's `/namespaces` covers both halves of the answer: the user's own
+/// namespace and every group they belong to.
+fn gitlab_namespaces(base: &str, token: &str) -> Vec<Namespace> {
+    let url = format!("{}/api/v4/namespaces?per_page=100", base.trim_end_matches('/'));
+    let json: serde_json::Value = match ureq::get(&url)
+        .set("authorization", &format!("Bearer {token}"))
+        .timeout(Duration::from_secs(20))
+        .call()
+        .ok()
+        .and_then(|r| r.into_json().ok())
+    {
+        Some(j) => j,
+        None => return Vec::new(),
+    };
+    json.as_array()
+        .map(|spaces| {
+            spaces
+                .iter()
+                .filter_map(|n| {
+                    let path = n["full_path"].as_str().or_else(|| n["path"].as_str())?;
+                    Some(Namespace {
+                        id: n["id"].as_u64().map(|i| i.to_string()).unwrap_or_default(),
+                        path: path.to_string(),
+                        kind: if n["kind"].as_str() == Some("group") { "group".into() } else { "user".into() },
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn azure_projects(base: &str, token: &str) -> Vec<Namespace> {
+    let url = format!("{}/_apis/projects?api-version=7.1", base.trim_end_matches('/'));
+    let json: serde_json::Value = match ureq::get(&url)
+        .set("authorization", &azure_basic(token))
+        .set("accept", "application/json")
+        .timeout(Duration::from_secs(20))
+        .call()
+        .ok()
+        .and_then(|r| r.into_json().ok())
+    {
+        Some(j) => j,
+        None => return Vec::new(),
+    };
+    json["value"]
+        .as_array()
+        .map(|projects| {
+            projects
+                .iter()
+                .filter_map(|p| p["name"].as_str())
+                .map(|name| Namespace { id: name.to_string(), path: name.to_string(), kind: "group".into() })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Create a new repository on a connected account and return its URLs.
 #[tauri::command]
 pub async fn create_remote_repo(
@@ -2028,6 +2148,7 @@ pub async fn create_remote_repo(
     connection_id: String,
     name: String,
     private: bool,
+    namespace: Option<String>,
 ) -> Result<RepoRef> {
     let cfg = load(&app)?;
     let conn = cfg
@@ -2037,10 +2158,11 @@ pub async fn create_remote_repo(
         .cloned()
         .ok_or_else(|| AccountError::Msg("Connection not found.".into()))?;
     let token = access_token(&conn.id)?;
+    let ns = namespace.filter(|n| !n.trim().is_empty());
     tauri::async_runtime::spawn_blocking(move || match conn.provider.as_str() {
-        "github" => github_create(&conn.base_url, &token, &name, private),
-        "gitlab" => gitlab_create(&conn.base_url, &token, &name, private),
-        "azure" => azure_create(&conn.base_url, &token, &name, private),
+        "github" => github_create(&conn.base_url, &token, &name, private, ns.as_deref()),
+        "gitlab" => gitlab_create(&conn.base_url, &token, &name, private, ns.as_deref()),
+        "azure" => azure_create(&conn.base_url, &token, &name, private, ns.as_deref()),
         "beanstalk" => beanstalk_create(&conn.base_url, &conn.username, &token, &name, private),
         _ => Err(AccountError::Msg("Unsupported provider.".into())),
     })
@@ -2048,8 +2170,12 @@ pub async fn create_remote_repo(
     .map_err(|e| AccountError::Msg(e.to_string()))?
 }
 
-fn github_create(base: &str, token: &str, name: &str, private: bool) -> Result<RepoRef> {
-    let url = format!("{}/user/repos", base.trim_end_matches('/'));
+fn github_create(base: &str, token: &str, name: &str, private: bool, org: Option<&str>) -> Result<RepoRef> {
+    let root = base.trim_end_matches('/');
+    let url = match org {
+        Some(org) => format!("{root}/orgs/{}/repos", urlencode(org)),
+        None => format!("{root}/user/repos"),
+    };
     let json: serde_json::Value = ureq::post(&url)
         .set("authorization", &format!("Bearer {token}"))
         .set("user-agent", "Plumb")
@@ -2066,13 +2192,22 @@ fn github_create(base: &str, token: &str, name: &str, private: bool) -> Result<R
     })
 }
 
-fn gitlab_create(base: &str, token: &str, name: &str, private: bool) -> Result<RepoRef> {
+fn gitlab_create(base: &str, token: &str, name: &str, private: bool, namespace_id: Option<&str>) -> Result<RepoRef> {
     let url = format!("{}/api/v4/projects", base.trim_end_matches('/'));
     let visibility = if private { "private" } else { "public" };
+    let mut body = serde_json::json!({ "name": name, "visibility": visibility });
+    // Without a namespace GitLab drops the project in the user's own space —
+    // which is exactly the surprise this argument exists to avoid.
+    if let Some(id) = namespace_id {
+        body["namespace_id"] = match id.parse::<u64>() {
+            Ok(n) => serde_json::json!(n),
+            Err(_) => serde_json::json!(id),
+        };
+    }
     let json: serde_json::Value = ureq::post(&url)
         .set("authorization", &format!("Bearer {token}"))
         .timeout(Duration::from_secs(20))
-        .send_json(serde_json::json!({ "name": name, "visibility": visibility }))
+        .send_json(body)
         .map_err(|e| http_err("Couldn't create project", e))?
         .into_json()?;
     Ok(RepoRef {
@@ -2314,12 +2449,16 @@ fn azure_repos(base: &str, token: &str) -> Result<Vec<RepoRef>> {
         .unwrap_or_default())
 }
 
-fn azure_create(base: &str, token: &str, name: &str, private: bool) -> Result<RepoRef> {
+fn azure_create(base: &str, token: &str, name: &str, private: bool, project: Option<&str>) -> Result<RepoRef> {
     // Azure repo visibility follows its project; `private` isn't a repo-level knob.
     let _ = private;
-    let (project, repo) = name
-        .split_once('/')
-        .ok_or_else(|| AccountError::Msg("Name a new Azure repo as project/repo.".into()))?;
+    // A repo lives in a project, so either one was picked or the name carries it.
+    let (project, repo) = match project {
+        Some(p) => (p, name),
+        None => name
+            .split_once('/')
+            .ok_or_else(|| AccountError::Msg("Name a new Azure repo as project/repo.".into()))?,
+    };
     let root = base.trim_end_matches('/');
     let proj: serde_json::Value = ureq::get(&format!("{root}/_apis/projects/{}?api-version=7.1", urlencode(project)))
         .set("authorization", &azure_basic(token))
