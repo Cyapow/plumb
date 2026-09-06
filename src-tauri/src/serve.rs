@@ -419,6 +419,7 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, Strin
 
         // ── Sync / network actions ──
         "fetch" => ok(tauri::async_runtime::block_on(git::fetch(s("path")))),
+        "fetch_remote" => ok(block_on(git::fetch_remote(s("path"), s("name")))),
         "pull" => ok(tauri::async_runtime::block_on(git::pull(s("path")))),
         "push" => ok(tauri::async_runtime::block_on(git::push(s("path")))),
         "commit" => ok(git::commit(s("path"), s("message"), b("amend"), b("signOff"), b("sign"))),
@@ -500,6 +501,7 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, Strin
         "delete_remote_branch" => ok(block_on(git::delete_remote_branch(s("path"), s("remote"), s("branch")))),
         "list_remote_branches" => ok(block_on(git::list_remote_branches(s("url")))),
         "push_branch" => ok(block_on(git::push_branch(s("path"), s("branch")))),
+        "push_target" => ok(block_on(git::push_target(s("path"), s("remote"), s("remoteBranch"), b("setUpstream"), b("forceWithLease")))),
         "pull_mode" => ok(block_on(git::pull_mode(s("path"), s("mode")))),
         "push_advanced" => ok(block_on(git::push_advanced(s("path"), sopt("remote"), b("forceWithLease"), b("pushTags"), b("setUpstream")))),
         "add_remote" => ok(git::add_remote(s("path"), s("name"), s("url"))),
@@ -565,7 +567,8 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, Strin
         "github_device_poll" => ok(block_on(accounts::github_device_poll(app.clone(), s("clientId"), s("deviceCode"), su64("interval")))),
         "gitlab_oauth_login" => ok(block_on(accounts::gitlab_oauth_login(app.clone(), s("clientId")))),
         "create_pull_request" => ok(block_on(accounts::create_pull_request(app.clone(), s("repoPath"), s("sourceBranch"), s("targetBranch"), s("title"), s("body"), b("draft")))),
-        "create_remote_repo" => ok(block_on(accounts::create_remote_repo(app.clone(), s("connectionId"), s("name"), b("private")))),
+        "create_remote_repo" => ok(block_on(accounts::create_remote_repo(app.clone(), s("connectionId"), s("name"), b("private"), sopt("namespace")))),
+        "list_namespaces" => ok(block_on(accounts::list_namespaces(app.clone(), s("connectionId")))),
         "list_account_repos" => ok(block_on(accounts::list_account_repos(app.clone(), s("connectionId")))),
         "list_workflows" => ok(block_on(accounts::list_workflows(app.clone(), s("repoPath")))),
         "trigger_pipeline" => ok(block_on(accounts::trigger_pipeline(app.clone(), s("repoPath"), s("gitRef"), sopt("workflowId")))),

@@ -2286,6 +2286,16 @@ pub async fn fetch(path: String) -> Result<String> {
     .await
 }
 
+/// Fetch one remote (pruning deleted branches).
+#[tauri::command]
+pub async fn fetch_remote(path: String, name: String) -> Result<String> {
+    spawn(move || {
+        let out = run_git(&path, &["fetch", "--prune", &name])?;
+        Ok(if out.is_empty() { format!("Fetched {name}") } else { out })
+    })
+    .await
+}
+
 /// Pull the current branch's upstream (fast-forward or merge, no editor).
 #[tauri::command]
 pub async fn pull(path: String) -> Result<String> {
@@ -2345,6 +2355,35 @@ pub async fn push_advanced(
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let out = run_git(&path, &refs)?;
         Ok(if out.is_empty() { "Pushed".into() } else { out })
+    })
+    .await
+}
+
+/// Push HEAD to a chosen remote under a chosen branch name. This is the
+/// explicit form behind the push-target dialog: the branch a repo pushes to is
+/// not always the one it's called locally, and with several remotes there is no
+/// sensible default to guess at.
+#[tauri::command]
+pub async fn push_target(
+    path: String,
+    remote: String,
+    remote_branch: String,
+    set_upstream: bool,
+    force_with_lease: bool,
+) -> Result<String> {
+    spawn(move || {
+        let mut args: Vec<String> = vec!["push".into()];
+        if force_with_lease {
+            args.push("--force-with-lease".into());
+        }
+        if set_upstream {
+            args.push("--set-upstream".into());
+        }
+        args.push(remote.clone());
+        args.push(format!("HEAD:refs/heads/{remote_branch}"));
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = run_git(&path, &refs)?;
+        Ok(if out.is_empty() { format!("Pushed to {remote}/{remote_branch}") } else { out })
     })
     .await
 }

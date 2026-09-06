@@ -490,6 +490,10 @@ export function fetch(path: string): Promise<string> {
   return invoke("fetch", { path });
 }
 
+export function fetchRemote(path: string, name: string): Promise<string> {
+  return invoke("fetch_remote", { path, name });
+}
+
 export function pull(path: string): Promise<string> {
   return invoke("pull", { path });
 }
@@ -508,6 +512,20 @@ export function pushAdvanced(
     forceWithLease: opts.forceWithLease ?? false,
     pushTags: opts.pushTags ?? false,
     setUpstream: opts.setUpstream ?? false,
+  });
+}
+
+/** Push HEAD to an explicitly chosen remote and branch name. */
+export function pushTarget(
+  path: string,
+  opts: { remote: string; remoteBranch: string; setUpstream?: boolean; forceWithLease?: boolean },
+): Promise<string> {
+  return invoke("push_target", {
+    path,
+    remote: opts.remote,
+    remoteBranch: opts.remoteBranch,
+    setUpstream: opts.setUpstream ?? false,
+    forceWithLease: opts.forceWithLease ?? false,
   });
 }
 

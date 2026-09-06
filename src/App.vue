@@ -45,6 +45,11 @@ import {
   pushAdvanced,
   pullMode,
   deleteRemoteBranch,
+  fetchRemote,
+  renameRemote,
+  removeRemote,
+  setRemoteUrl,
+  pruneRemote,
   listStashes,
   stashApply,
   stashPop,
@@ -101,6 +106,7 @@ import PlumbMark from "./components/PlumbMark.vue";
 import CommandPalette from "./components/CommandPalette.vue";
 import CloneDialog from "./components/CloneDialog.vue";
 import PublishDialog from "./components/PublishDialog.vue";
+import PushTargetDialog from "./components/PushTargetDialog.vue";
 import RemotesDialog from "./components/RemotesDialog.vue";
 import ConflictDialog from "./components/ConflictDialog.vue";
 import RebaseDialog from "./components/RebaseDialog.vue";
@@ -188,6 +194,7 @@ const paletteOpen = ref(false);
 const commitFilter = ref("");
 const cloneOpen = ref(false);
 const publishOpen = ref(false);
+const pushTargetOpen = ref(false);
 const remotesOpen = ref(false);
 const conflictOpen = ref(false);
 const rebaseOpen = ref(false);
@@ -543,6 +550,8 @@ const syncLabel = ref("");
 const localBranches = computed(() => branches.value.filter((b) => !b.is_remote));
 const remoteBranches = computed(() => branches.value.filter((b) => b.is_remote));
 const headBranch = computed(() => repo.value?.head_branch ?? "HEAD");
+// The remote-tracking branch HEAD pushes to by default, e.g. "origin/main".
+const headUpstream = computed(() => branches.value.find((b) => b.is_head)?.upstream ?? null);
 const headInfo = computed(() => localBranches.value.find((b) => b.is_head));
 // When detached (checked out a tag/commit), head_branch is the short sha —
 // label it with the tag pointing there, if any, so it's recognisable.
@@ -984,15 +993,23 @@ const doFetch = () => sync(gitFetch, "Fetch", "Fetching");
 const doPull = () => sync(gitPull, "Pull", "Pulling");
 async function doPush() {
   if (!repo.value) return;
-  const remotes = await listRemotes(repo.value.path).catch(() => []);
-  if (!remotes.length) {
+  const configured = await listRemotes(repo.value.path).catch(() => []);
+  if (!configured.length) {
     publishOpen.value = true;
+    return;
+  }
+  // Nothing tracked yet: which remote, and under what name, is the user's call —
+  // guessing origin/<local name> is how branches end up in the wrong place.
+  if (!headUpstream.value) {
+    pushTargetOpen.value = true;
     return;
   }
   sync(gitPush, "Push", "Pushing");
 }
+// A freshly published repo has a remote but no upstream — same choice to make.
 function onPublished() {
-  sync(gitPush, "Push", "Pushing");
+  loadExtras(repo.value?.path ?? "");
+  pushTargetOpen.value = true;
 }
 
 // Right-click Push for options beyond a plain push.
@@ -1001,6 +1018,7 @@ function pushMenu(e: MouseEvent) {
   if (!repo.value) return;
   openContextMenu(e, [
     { label: "Push", action: () => doPush() },
+    { label: "Push to…", action: () => (pushTargetOpen.value = true) },
     { label: "Push & set upstream", action: () => sync((p) => pushAdvanced(p, { setUpstream: true }), "Push", "Pushing") },
     { label: "Push tags", action: () => sync((p) => pushAdvanced(p, { pushTags: true }), "Push tags", "Pushing") },
     { separator: true, label: "" },
@@ -1023,6 +1041,54 @@ function pullMenu(e: MouseEvent) {
     { label: "Pull (merge)", action: () => sync((p) => pullMode(p, "merge"), "Pull", "Pulling") },
     { label: "Pull (rebase)", action: () => sync((p) => pullMode(p, "rebase"), "Pull", "Pulling") },
     { label: "Pull (fast-forward only)", action: () => sync((p) => pullMode(p, "ff-only"), "Pull", "Pulling") },
+  ]);
+}
+
+// Right-click a remote. Everything here was previously a trip to the terminal
+// or the Manage Remotes sheet — including removing a remote whose repository no
+// longer exists, which otherwise leaves the repo unable to push anywhere.
+function remoteMenu(e: MouseEvent, r: RemoteInfo) {
+  e.preventDefault();
+  if (!repo.value) return;
+  const path = repo.value.path;
+  openContextMenu(e, [
+    { label: `Fetch ${r.name}`, action: () => sync((p) => fetchRemote(p, r.name), `Fetch ${r.name}`, "Fetching") },
+    { label: "Prune deleted branches", action: () => runOp(() => pruneRemote(path, r.name), `Pruned ${r.name}`) },
+    { separator: true, label: "" },
+    { label: "Copy URL", action: () => copy(r.url, "Remote URL") },
+    {
+      label: "Edit URL…",
+      action: async () => {
+        const url = await promptText({ title: `Edit ${r.name}`, label: "Remote URL", value: r.url });
+        const next = url?.trim();
+        if (next && next !== r.url) runOp(() => setRemoteUrl(path, r.name, next), `Updated ${r.name}`);
+      },
+    },
+    {
+      label: "Rename…",
+      action: async () => {
+        const name = await promptText({ title: "Rename remote", label: `New name for "${r.name}"`, value: r.name });
+        const next = name?.trim();
+        if (next && next !== r.name) runOp(() => renameRemote(path, r.name, next), `Renamed to ${next}`);
+      },
+    },
+    { separator: true, label: "" },
+    { label: "Add a remote…", action: () => (remotesOpen.value = true) },
+    {
+      label: "Remove remote…",
+      danger: true,
+      action: async () => {
+        if (
+          await promptConfirm({
+            title: `Remove "${r.name}"?`,
+            body: "This only drops the local link — nothing on the server changes.",
+            confirmLabel: "Remove",
+            danger: true,
+          })
+        )
+          runOp(() => removeRemote(path, r.name), `Removed ${r.name}`);
+      },
+    },
   ]);
 }
 
@@ -1788,15 +1854,20 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           </div>
           <template v-if="!collapsedSections.remotes">
             <div class="sec-list" :style="{ maxHeight: secH('remotes') + 'px' }">
+              <!-- The configured remotes themselves, always listed: they're what
+                   you right-click to fetch, re-point, rename or remove. Their
+                   fetched branches hang underneath. -->
+              <div
+                v-for="r in remotes"
+                :key="r.name"
+                class="side-row remote-row"
+                :title="r.url"
+                @contextmenu="remoteMenu($event, r)"
+              >
+                <span class="ico">⛁</span>{{ r.name }}
+                <span class="remote-host mono">{{ shortHost(r.url) }}</span>
+              </div>
               <BranchTree v-if="remoteTree.length" :nodes="remoteTree" />
-              <!-- Configured remotes with no fetched branches yet (e.g. an empty
-                   origin) — still show the connection so it's visible. -->
-              <template v-else>
-                <div v-for="r in remotes" :key="r.name" class="side-row remote-row" :title="r.url">
-                  <span class="ico">⛁</span>{{ r.name }}
-                  <span class="remote-host mono">{{ shortHost(r.url) }}</span>
-                </div>
-              </template>
             </div>
             <div class="sec-grip" title="Drag to resize" @pointerdown="startSecResize('remotes', $event)"></div>
           </template>
@@ -1976,6 +2047,14 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
       :repo-path="repo.path"
       :repo-name="repo.name"
       @published="onPublished"
+    />
+    <PushTargetDialog
+      v-if="repo"
+      v-model="pushTargetOpen"
+      :repo-path="repo.path"
+      :branch="headBranch"
+      :upstream="headUpstream"
+      @pushed="refresh"
     />
     <RemotesDialog v-if="repo" v-model="remotesOpen" :repo-path="repo.path" />
     <ConflictDialog v-if="repo" v-model="conflictOpen" :repo-path="repo.path" @resolved="refresh" />

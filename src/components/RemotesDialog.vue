@@ -8,6 +8,7 @@ import {
   removeRemote,
   setRemoteUrl,
   pruneRemote,
+  fetchRemote,
   type RemoteInfo,
 } from "../lib/git";
 import { promptText, promptConfirm, toast } from "../lib/ui";
@@ -83,6 +84,7 @@ async function remove(r: RemoteInfo) {
             <div class="r-top">
               <span class="r-name mono">{{ r.name }}</span>
               <div class="r-actions">
+                <button @click="run(() => fetchRemote(props.repoPath, r.name), `Fetched ${r.name}`)" :disabled="busy">Fetch</button>
                 <button @click="rename(r)" :disabled="busy">Rename</button>
                 <button @click="editUrl(r)" :disabled="busy">URL</button>
                 <button @click="run(() => pruneRemote(props.repoPath, r.name), '')" :disabled="busy">Prune</button>
