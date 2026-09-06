@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -55,16 +56,144 @@ pub struct ConnectionConfig {
 
 const TOKEN_SERVICE: &str = "app.plumb.desktop.git";
 
-fn store_token(id: &str, token: &str) -> Result<()> {
-    crate::secrets::store(TOKEN_SERVICE, id, token)
+/// Refresh this long *before* the recorded expiry, to cover clock skew and a
+/// slow request.
+const REFRESH_SKEW_SECS: u64 = 120;
+
+/// What the keychain holds for one connection. A personal access token is a
+/// bundle with only `access` set. OAuth logins that hand back a refresh token
+/// — GitLab access tokens expire two hours after they're minted — also carry
+/// what's needed to mint a new pair without sending the user back to a browser.
+#[derive(Serialize, Deserialize, Clone, Default, Debug, PartialEq)]
+struct TokenBundle {
+    access: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    refresh: Option<String>,
+    /// Unix seconds at which `access` stops working.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expires_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    redirect_uri: Option<String>,
+    /// Origin the token was minted at, e.g. `https://gitlab.com`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    auth_base: Option<String>,
+}
+
+impl TokenBundle {
+    fn pat(token: &str) -> Self {
+        TokenBundle { access: token.to_string(), ..Default::default() }
+    }
+    /// Tokens saved before bundles existed are bare strings in the keychain.
+    fn parse(stored: &str) -> Self {
+        serde_json::from_str::<TokenBundle>(stored)
+            .ok()
+            .filter(|b| !b.access.is_empty())
+            .unwrap_or_else(|| TokenBundle::pat(stored))
+    }
+    fn refreshable(&self) -> bool {
+        self.refresh.is_some() && self.client_id.is_some() && self.auth_base.is_some()
+    }
+    fn expired_at(&self, now: u64) -> bool {
+        self.expires_at.is_some_and(|e| now + REFRESH_SKEW_SECS >= e)
+    }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn store_bundle(id: &str, bundle: &TokenBundle) -> Result<()> {
+    crate::secrets::store(TOKEN_SERVICE, id, &serde_json::to_string(bundle)?)
         .map_err(|e| AccountError::Msg(format!("Couldn't save token: {e}")))
 }
-fn read_token(id: &str) -> Result<String> {
+fn store_token(id: &str, token: &str) -> Result<()> {
+    store_bundle(id, &TokenBundle::pat(token))
+}
+fn read_bundle(id: &str) -> Result<TokenBundle> {
     crate::secrets::read(TOKEN_SERVICE, id)
+        .map(|s| TokenBundle::parse(&s))
         .map_err(|_| AccountError::Msg("No token stored for this account.".into()))
 }
 fn delete_token(id: &str) {
     crate::secrets::delete(TOKEN_SERVICE, id);
+}
+
+/// One lock per connection. GitLab *rotates* on refresh — the old access and
+/// refresh tokens both die the moment a new pair is issued — so two threads
+/// refreshing at once would leave one of them holding a dead token.
+fn refresh_lock(id: &str) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+    let map = LOCKS.get_or_init(Default::default);
+    let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
+    guard.entry(id.to_string()).or_insert_with(|| Arc::new(Mutex::new(()))).clone()
+}
+
+/// The bearer token to use *right now*, renewing an expired OAuth token first.
+fn access_token(id: &str) -> Result<String> {
+    let bundle = read_bundle(id)?;
+    // Non-expiring tokens (PATs, GitHub OAuth) and tokens we can't renew are
+    // handed over as-is — the API's own 401 is the better error there.
+    if !bundle.expired_at(now_secs()) || !bundle.refreshable() {
+        return Ok(bundle.access);
+    }
+    let lock = refresh_lock(id);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    // Re-read: another thread may have refreshed while we waited for the lock.
+    let bundle = read_bundle(id)?;
+    if !bundle.expired_at(now_secs()) {
+        return Ok(bundle.access);
+    }
+    let fresh = refresh_oauth_token(&bundle)?;
+    store_bundle(id, &fresh)?;
+    Ok(fresh.access)
+}
+
+/// Trade the refresh token for a new access/refresh pair.
+fn refresh_oauth_token(bundle: &TokenBundle) -> Result<TokenBundle> {
+    let (base, client_id, refresh) = match (&bundle.auth_base, &bundle.client_id, &bundle.refresh) {
+        (Some(b), Some(c), Some(r)) => (b, c, r),
+        _ => return Err(AccountError::Msg("This account can't be renewed — reconnect it.".into())),
+    };
+    let redirect = bundle.redirect_uri.clone().unwrap_or_default();
+    let mut form: Vec<(&str, &str)> = vec![
+        ("client_id", client_id.as_str()),
+        ("refresh_token", refresh.as_str()),
+        ("grant_type", "refresh_token"),
+    ];
+    if !redirect.is_empty() {
+        form.push(("redirect_uri", redirect.as_str()));
+    }
+    let json: serde_json::Value = ureq::post(&format!("{}/oauth/token", base.trim_end_matches('/')))
+        .set("accept", "application/json")
+        .timeout(Duration::from_secs(20))
+        .send_form(&form)
+        .map_err(|e| http_err("Sign-in expired — reconnect the account", e))?
+        .into_json()?;
+    let fresh = token_bundle_from_response(&json, bundle);
+    if fresh.access.is_empty() {
+        return Err(AccountError::Msg("Sign-in expired — reconnect the account.".into()));
+    }
+    Ok(fresh)
+}
+
+/// Build a bundle from an `/oauth/token` response, keeping the client details
+/// (and the outgoing refresh token, if the provider didn't rotate it) from
+/// `prev`.
+fn token_bundle_from_response(json: &serde_json::Value, prev: &TokenBundle) -> TokenBundle {
+    TokenBundle {
+        access: json["access_token"].as_str().unwrap_or_default().to_string(),
+        refresh: json["refresh_token"]
+            .as_str()
+            .map(String::from)
+            .or_else(|| prev.refresh.clone()),
+        expires_at: json["expires_in"].as_u64().map(|s| now_secs() + s),
+        ..prev.clone()
+    }
 }
 
 fn config_path(app: &AppHandle) -> Result<PathBuf> {
@@ -155,7 +284,7 @@ pub async fn test_connection(app: AppHandle, id: String) -> Result<String> {
         .find(|c| c.id == id)
         .cloned()
         .ok_or_else(|| AccountError::Msg("Connection not found.".into()))?;
-    let token = read_token(&id)?;
+    let token = access_token(&id)?;
     tauri::async_runtime::spawn_blocking(move || {
         let (user, _) = fetch_user(&conn.provider, &conn.base_url, &token, &conn.username)?;
         Ok(format!("Signed in as {user}."))
@@ -384,12 +513,12 @@ fn persist_connection(
     app: &AppHandle,
     provider: &str,
     base_url: &str,
-    token: &str,
+    bundle: &TokenBundle,
     username: String,
     avatar: String,
 ) -> Result<Connection> {
     let id = new_id(provider);
-    store_token(&id, token)?;
+    store_bundle(&id, bundle)?;
     let conn = Connection {
         id,
         provider: provider.to_string(),
@@ -452,7 +581,14 @@ pub async fn github_device_poll(
         })
         .await
         .map_err(|e| AccountError::Msg(e.to_string()))??;
-    persist_connection(&app, "github", "https://api.github.com", &token, username, avatar)
+    persist_connection(
+        &app,
+        "github",
+        "https://api.github.com",
+        &TokenBundle::pat(&token),
+        username,
+        avatar,
+    )
 }
 
 fn poll_github(client_id: &str, device_code: &str, interval: u64) -> Result<String> {
@@ -488,18 +624,21 @@ fn poll_github(client_id: &str, device_code: &str, interval: u64) -> Result<Stri
 #[tauri::command]
 pub async fn gitlab_oauth_login(app: AppHandle, client_id: String) -> Result<Connection> {
     let base = "https://gitlab.com";
-    let (token, username, avatar) =
-        tauri::async_runtime::spawn_blocking(move || -> Result<(String, String, String)> {
-            let token = gitlab_pkce(&client_id, base)?;
-            let (u, a) = fetch_user("gitlab", base, &token, "")?;
-            Ok((token, u, a))
+    let (bundle, username, avatar) =
+        tauri::async_runtime::spawn_blocking(move || -> Result<(TokenBundle, String, String)> {
+            let bundle = gitlab_pkce(&client_id, base)?;
+            let (u, a) = fetch_user("gitlab", base, &bundle.access, "")?;
+            Ok((bundle, u, a))
         })
         .await
         .map_err(|e| AccountError::Msg(e.to_string()))??;
-    persist_connection(&app, "gitlab", base, &token, username, avatar)
+    persist_connection(&app, "gitlab", base, &bundle, username, avatar)
 }
 
-fn gitlab_pkce(client_id: &str, base: &str) -> Result<String> {
+/// Runs the browser half of the flow and returns the resulting token bundle.
+/// GitLab access tokens last two hours, so the refresh token and the client
+/// details needed to spend it are kept alongside the access token.
+fn gitlab_pkce(client_id: &str, base: &str) -> Result<TokenBundle> {
     let mut vb = [0u8; 32];
     getrandom::getrandom(&mut vb).map_err(|e| AccountError::Msg(format!("rng: {e}")))?;
     let verifier = b64url(&vb);
@@ -543,10 +682,19 @@ fn gitlab_pkce(client_id: &str, base: &str) -> Result<String> {
         })?
         .into_json()?;
     eprintln!("[plumb oauth] gitlab: token response keys: {:?}", json.as_object().map(|o| o.keys().collect::<Vec<_>>()));
-    json["access_token"]
-        .as_str()
-        .map(String::from)
-        .ok_or_else(|| AccountError::Msg("GitLab returned no token.".into()))
+    let bundle = token_bundle_from_response(
+        &json,
+        &TokenBundle {
+            client_id: Some(client_id.to_string()),
+            redirect_uri: Some(redirect.clone()),
+            auth_base: Some(base.to_string()),
+            ..Default::default()
+        },
+    );
+    if bundle.access.is_empty() {
+        return Err(AccountError::Msg("GitLab returned no token.".into()));
+    }
+    Ok(bundle)
 }
 
 fn wait_for_code(listener: std::net::TcpListener, expected_state: &str) -> Result<String> {
@@ -568,16 +716,8 @@ fn wait_for_code(listener: std::net::TcpListener, expected_state: &str) -> Resul
                     .nth(1)
                     .and_then(|path| path.split('?').nth(1))
                     .unwrap_or("");
-                let mut code = None;
-                let mut state = None;
-                for kv in query.split('&') {
-                    if let Some(v) = kv.strip_prefix("code=") {
-                        code = Some(v.to_string());
-                    } else if let Some(v) = kv.strip_prefix("state=") {
-                        state = Some(v.to_string());
-                    }
-                }
-                let body = "<html><body style='font-family:-apple-system,sans-serif;padding:48px;text-align:center'><h2>Connected to Plumb</h2><p>You can close this tab and return to the app.</p></body></html>";
+                let outcome = parse_callback(query, expected_state);
+                let body = callback_page(&outcome);
                 let _ = write!(
                     stream,
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -585,10 +725,7 @@ fn wait_for_code(listener: std::net::TcpListener, expected_state: &str) -> Resul
                     body
                 );
                 let _ = stream.flush();
-                if state.as_deref() != Some(expected_state) {
-                    return Err(AccountError::Msg("OAuth state mismatch — try again.".into()));
-                }
-                return code.ok_or_else(|| AccountError::Msg("No authorization code returned.".into()));
+                return outcome;
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 if Instant::now() > deadline {
@@ -599,6 +736,78 @@ fn wait_for_code(listener: std::net::TcpListener, expected_state: &str) -> Resul
             Err(e) => return Err(AccountError::Msg(format!("Callback error: {e}"))),
         }
     }
+}
+
+/// Read the loopback redirect's query string. Returns the authorization code,
+/// or an error describing what the provider sent instead — declining on the
+/// consent screen arrives here as `error=access_denied`, *not* as a missing
+/// code, and must not be reported to the user as a successful connection.
+fn parse_callback(query: &str, expected_state: &str) -> Result<String> {
+    let (mut code, mut state, mut error, mut description) = (None, None, None, None);
+    for kv in query.split('&') {
+        let Some((key, value)) = kv.split_once('=') else { continue };
+        match key {
+            "code" => code = Some(urldecode(value)),
+            "state" => state = Some(urldecode(value)),
+            "error" => error = Some(urldecode(value)),
+            "error_description" => description = Some(urldecode(value)),
+            _ => {}
+        }
+    }
+    if state.as_deref() != Some(expected_state) {
+        return Err(AccountError::Msg("OAuth state mismatch — try again.".into()));
+    }
+    if let Some(error) = error {
+        return Err(AccountError::Msg(match error.as_str() {
+            "access_denied" => "Authorization was cancelled.".to_string(),
+            _ => description.unwrap_or(error),
+        }));
+    }
+    code.filter(|c| !c.is_empty())
+        .ok_or_else(|| AccountError::Msg("No authorization code returned.".into()))
+}
+
+/// The page the browser tab is left on. It has to tell the truth about a
+/// cancelled or failed authorization — the app can't repaint that tab later.
+fn callback_page(outcome: &Result<String>) -> String {
+    let body = match outcome {
+        Ok(_) => "<h2>Connected to Plumb</h2><p>You can close this tab and return to the app.</p>".to_string(),
+        Err(e) => format!(
+            "<h2>Not connected</h2><p>{}</p><p>You can close this tab and return to the app.</p>",
+            html_escape(&e.to_string())
+        ),
+    };
+    format!("<html><body style='font-family:-apple-system,sans-serif;padding:48px;text-align:center'>{body}</body></html>")
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+fn urldecode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len()
+                && bytes[i + 1].is_ascii_hexdigit()
+                && bytes[i + 2].is_ascii_hexdigit() =>
+            {
+                out.push(u8::from_str_radix(&s[i + 1..i + 3], 16).unwrap_or(b'%'));
+                i += 3;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /* ── Pull / merge requests ────────────────────────────────────────── */
@@ -726,7 +935,7 @@ pub async fn list_pull_requests(app: AppHandle, repo_path: String) -> Result<PrL
         if let Some((host, path)) = parse_remote(url) {
             matched_host.get_or_insert(host.clone());
             if let Some((conn, repo_id)) = match_conn(&cfg, &host, &path) {
-                let token = read_token(&conn.id)?;
+                let token = access_token(&conn.id)?;
                 let provider = conn.provider.clone();
                 let base = conn.base_url.clone();
                 let items = tauri::async_runtime::spawn_blocking(move || match provider.as_str() {
@@ -773,7 +982,7 @@ pub async fn list_ci_statuses(app: AppHandle, repo_path: String) -> Result<Vec<C
     for (_, url) in &remotes {
         if let Some((host, path)) = parse_remote(url) {
             if let Some((conn, repo_id)) = match_conn(&cfg, &host, &path) {
-                let token = read_token(&conn.id)?;
+                let token = access_token(&conn.id)?;
                 let (provider, base) = (conn.provider.clone(), conn.base_url.clone());
                 return tauri::async_runtime::spawn_blocking(move || match provider.as_str() {
                     "github" => Ok(github_ci_map(&base, &token, &repo_id)),
@@ -1059,7 +1268,7 @@ pub async fn pipeline_detail(app: AppHandle, repo_path: String, sha: String) -> 
     for (_, url) in &remotes {
         if let Some((host, path)) = parse_remote(url) {
             if let Some((conn, repo_id)) = match_conn(&cfg, &host, &path) {
-                let token = read_token(&conn.id)?;
+                let token = access_token(&conn.id)?;
                 let (provider, base) = (conn.provider.clone(), conn.base_url.clone());
                 return tauri::async_runtime::spawn_blocking(move || match provider.as_str() {
                     "github" => Ok(github_pipeline_detail(&base, &token, &repo_id, &sha)),
@@ -1116,7 +1325,7 @@ pub async fn list_pipelines(app: AppHandle, repo_path: String) -> Result<Pipelin
         if let Some((host, path)) = parse_remote(url) {
             matched_host.get_or_insert(host.clone());
             if let Some((conn, repo_id)) = match_conn(&cfg, &host, &path) {
-                let token = read_token(&conn.id)?;
+                let token = access_token(&conn.id)?;
                 let (provider, base) = (conn.provider.clone(), conn.base_url.clone());
                 let items = tauri::async_runtime::spawn_blocking(move || match provider.as_str() {
                     "github" => github_pipeline_runs(&base, &token, &repo_id),
@@ -1147,7 +1356,7 @@ pub async fn job_log(app: AppHandle, repo_path: String, job_id: String) -> Resul
     for (_, url) in &remotes {
         if let Some((host, path)) = parse_remote(url) {
             if let Some((conn, repo_id)) = match_conn(&cfg, &host, &path) {
-                let token = read_token(&conn.id)?;
+                let token = access_token(&conn.id)?;
                 let (provider, base) = (conn.provider.clone(), conn.base_url.clone());
                 return tauri::async_runtime::spawn_blocking(move || {
                     if provider == "azure" {
@@ -1207,7 +1416,7 @@ pub async fn pipeline_action(app: AppHandle, repo_path: String, id: String, acti
     for (_, url) in &remotes {
         if let Some((host, path)) = parse_remote(url) {
             if let Some((conn, repo_id)) = match_conn(&cfg, &host, &path) {
-                let token = read_token(&conn.id)?;
+                let token = access_token(&conn.id)?;
                 let (provider, base) = (conn.provider.clone(), conn.base_url.clone());
                 return tauri::async_runtime::spawn_blocking(move || {
                     let (verb, ok) = match action.as_str() {
@@ -1378,7 +1587,7 @@ pub async fn list_workflows(app: AppHandle, repo_path: String) -> Result<Vec<Wor
                 if provider != "github" && provider != "azure" {
                     return Ok(Vec::new());
                 }
-                let token = read_token(&conn.id)?;
+                let token = access_token(&conn.id)?;
                 return tauri::async_runtime::spawn_blocking(move || match provider.as_str() {
                     "github" => github_workflows(&base, &token, &repo_id),
                     "azure" => azure_definitions(&base, &token, &repo_id),
@@ -1431,7 +1640,7 @@ pub async fn trigger_pipeline(
     for (_, url) in &remotes {
         if let Some((host, path)) = parse_remote(url) {
             if let Some((conn, repo_id)) = match_conn(&cfg, &host, &path) {
-                let token = read_token(&conn.id)?;
+                let token = access_token(&conn.id)?;
                 let (provider, base) = (conn.provider.clone(), conn.base_url.clone());
                 return tauri::async_runtime::spawn_blocking(move || match provider.as_str() {
                     "github" => github_dispatch(&base, &token, &repo_id, &git_ref, workflow_id.as_deref()),
@@ -1529,7 +1738,7 @@ pub async fn create_pull_request(
     for (_, url) in &remotes {
         if let Some((host, path)) = parse_remote(url) {
             if let Some((conn, repo_id)) = match_conn(&cfg, &host, &path) {
-                let token = read_token(&conn.id)?;
+                let token = access_token(&conn.id)?;
                 let (provider, base) = (conn.provider.clone(), conn.base_url.clone());
                 return tauri::async_runtime::spawn_blocking(move || match provider.as_str() {
                     "github" => github_create_pr(&base, &token, &repo_id, &source_branch, &target_branch, &title, &body, draft),
@@ -1800,7 +2009,7 @@ pub async fn list_account_repos(app: AppHandle, connection_id: String) -> Result
         .find(|c| c.id == connection_id)
         .cloned()
         .ok_or_else(|| AccountError::Msg("Connection not found.".into()))?;
-    let token = read_token(&conn.id)?;
+    let token = access_token(&conn.id)?;
     tauri::async_runtime::spawn_blocking(move || match conn.provider.as_str() {
         "github" => github_repos(&conn.base_url, &token),
         "gitlab" => gitlab_repos(&conn.base_url, &token),
@@ -1827,7 +2036,7 @@ pub async fn create_remote_repo(
         .find(|c| c.id == connection_id)
         .cloned()
         .ok_or_else(|| AccountError::Msg("Connection not found.".into()))?;
-    let token = read_token(&conn.id)?;
+    let token = access_token(&conn.id)?;
     tauri::async_runtime::spawn_blocking(move || match conn.provider.as_str() {
         "github" => github_create(&conn.base_url, &token, &name, private),
         "gitlab" => gitlab_create(&conn.base_url, &token, &name, private),
@@ -2416,5 +2625,119 @@ pub(crate) fn http_err(context: &str, e: ureq::Error) -> AccountError {
             AccountError::Msg(format!("{context}: HTTP {code} — {detail}"))
         }
         ureq::Error::Transport(t) => AccountError::Msg(format!("{context}: {t}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn callback_returns_the_authorization_code() {
+        assert_eq!(parse_callback("code=abc123&state=s1", "s1").unwrap(), "abc123");
+    }
+
+    #[test]
+    fn cancelling_on_the_consent_screen_is_not_a_connection() {
+        let err = parse_callback(
+            "error=access_denied&error_description=The+resource+owner+or+authorization+server+denied+the+request.&state=s1",
+            "s1",
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "Authorization was cancelled.");
+    }
+
+    #[test]
+    fn other_callback_errors_keep_the_provider_description() {
+        let err = parse_callback("error=invalid_scope&error_description=Bad+scope&state=s1", "s1")
+            .unwrap_err();
+        assert_eq!(err.to_string(), "Bad scope");
+    }
+
+    #[test]
+    fn callback_rejects_a_mismatched_state() {
+        let err = parse_callback("code=abc123&state=other", "s1").unwrap_err();
+        assert_eq!(err.to_string(), "OAuth state mismatch — try again.");
+    }
+
+    #[test]
+    fn a_failed_callback_page_does_not_claim_success() {
+        let page = callback_page(&parse_callback("error=access_denied&state=s1", "s1"));
+        assert!(!page.contains("Connected to Plumb"));
+        assert!(page.contains("Authorization was cancelled."));
+    }
+
+    #[test]
+    fn urldecode_handles_plus_and_percent_escapes() {
+        assert_eq!(urldecode("a+b%20c%2Fd%"), "a b c/d%");
+    }
+
+    #[test]
+    fn tokens_saved_before_bundles_still_read_as_pats() {
+        let bundle = TokenBundle::parse("glpat-abc123");
+        assert_eq!(bundle.access, "glpat-abc123");
+        assert!(!bundle.refreshable());
+        assert!(!bundle.expired_at(now_secs()));
+    }
+
+    #[test]
+    fn bundles_round_trip_through_the_keychain_format() {
+        let bundle = TokenBundle {
+            access: "at".into(),
+            refresh: Some("rt".into()),
+            expires_at: Some(1_700_000_000),
+            client_id: Some("cid".into()),
+            redirect_uri: Some("http://127.0.0.1:47823/callback".into()),
+            auth_base: Some("https://gitlab.com".into()),
+        };
+        let stored = serde_json::to_string(&bundle).unwrap();
+        assert_eq!(TokenBundle::parse(&stored), bundle);
+    }
+
+    #[test]
+    fn oauth_tokens_are_renewed_before_they_expire() {
+        let bundle = TokenBundle {
+            access: "at".into(),
+            refresh: Some("rt".into()),
+            expires_at: Some(10_000),
+            client_id: Some("cid".into()),
+            auth_base: Some("https://gitlab.com".into()),
+            ..Default::default()
+        };
+        assert!(bundle.refreshable());
+        assert!(!bundle.expired_at(10_000 - REFRESH_SKEW_SECS - 1));
+        assert!(bundle.expired_at(10_000 - REFRESH_SKEW_SECS));
+        assert!(bundle.expired_at(10_001));
+    }
+
+    #[test]
+    fn a_refreshed_response_carries_the_new_pair_and_keeps_client_details() {
+        let prev = TokenBundle {
+            access: "old".into(),
+            refresh: Some("old-rt".into()),
+            expires_at: Some(1),
+            client_id: Some("cid".into()),
+            redirect_uri: Some("http://127.0.0.1:47823/callback".into()),
+            auth_base: Some("https://gitlab.com".into()),
+        };
+        let json = serde_json::json!({
+            "access_token": "new",
+            "refresh_token": "new-rt",
+            "expires_in": 7200,
+        });
+        let fresh = token_bundle_from_response(&json, &prev);
+        assert_eq!(fresh.access, "new");
+        assert_eq!(fresh.refresh.as_deref(), Some("new-rt"));
+        assert_eq!(fresh.client_id, prev.client_id);
+        assert_eq!(fresh.auth_base, prev.auth_base);
+        assert!(fresh.expires_at.unwrap() > now_secs() + 7000);
+    }
+
+    #[test]
+    fn a_response_without_a_new_refresh_token_keeps_the_old_one() {
+        let prev = TokenBundle { refresh: Some("rt".into()), ..Default::default() };
+        let fresh = token_bundle_from_response(&serde_json::json!({ "access_token": "new" }), &prev);
+        assert_eq!(fresh.refresh.as_deref(), Some("rt"));
+        assert_eq!(fresh.expires_at, None);
     }
 }
