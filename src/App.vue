@@ -1937,6 +1937,7 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
         :repo-path="repo.path"
         @create="openCreatePr()"
         @pipeline="(sha, title) => sha && openPipeline(sha, title)"
+        @count="prCount = $event"
       />
 
       <!-- Repo-wide pipelines -->
