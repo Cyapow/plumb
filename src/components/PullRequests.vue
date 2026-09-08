@@ -7,7 +7,11 @@ import { openSettings } from "../lib/ui";
 import { relativeTime } from "../lib/format";
 
 const props = defineProps<{ repoPath: string }>();
-const emit = defineEmits<{ (e: "create"): void; (e: "pipeline", sha: string, title: string): void }>();
+const emit = defineEmits<{
+  (e: "create"): void;
+  (e: "pipeline", sha: string, title: string): void;
+  (e: "count", n: number | null): void;
+}>();
 
 // Compact CI glyph: ✓ passed, ✕ failed, ● running/queued.
 function ciGlyph(status: string): string {
@@ -49,9 +53,12 @@ async function load() {
   error.value = null;
   try {
     data.value = await listPullRequests(props.repoPath);
+    // Keep the sidebar badge in sync with what the view actually shows.
+    emit("count", data.value?.status === "ok" ? data.value.items.length : null);
   } catch (e) {
     error.value = String(e);
     data.value = null;
+    emit("count", null);
   } finally {
     loading.value = false;
   }
