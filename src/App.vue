@@ -1041,10 +1041,10 @@ async function checkoutRemote(remoteBranch: string) {
 /* ── Remote sync ──────────────────────────────────────────────────── */
 async function sync(fn: (path: string) => Promise<string>, label: string, gerund: string) {
   if (!repo.value || syncing.value) return;
-  // Don't race a background fetch for the remote ref locks.
-  if (bgFetchRun) await bgFetchRun;
   syncing.value = true;
   syncLabel.value = gerund;
+  // Don't race a background fetch for the remote ref locks.
+  if (bgFetchRun) await bgFetchRun;
   try {
     const msg = await fn(repo.value.path);
     await refresh();
