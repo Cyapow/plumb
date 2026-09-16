@@ -183,6 +183,65 @@ function onHistScroll(e: Event) {
 function measureHist() {
   if (histBodyEl.value) histHeight.value = histBodyEl.value.clientHeight;
 }
+
+/**
+ * Index to move to when stepping a selection by `delta` in a list of `length`.
+ * Returns null when the move is a no-op (empty list, or already at the edge).
+ * `current` is -1 when nothing is selected: ↓ then picks the first row.
+ */
+function stepIndex(current: number, delta: number, length: number): number | null {
+  if (length === 0) return null;
+  if (current < 0) return delta > 0 ? 0 : null;
+  const next = current + delta;
+  if (next < 0 || next >= length) return null;
+  return next;
+}
+
+/** Scroll the virtualised history so row `idx` is inside the viewport (minimal move). */
+function ensureRowVisible(idx: number) {
+  const el = histBodyEl.value;
+  if (!el) return;
+  const top = idx * HIST_ROW_H;
+  const bottom = top + HIST_ROW_H;
+  if (top < el.scrollTop) el.scrollTop = top;
+  else if (bottom > el.scrollTop + el.clientHeight) el.scrollTop = bottom - el.clientHeight;
+}
+
+/** ↑/↓ in History: step the selection through the visible (filtered) commits. */
+function moveSelection(delta: 1 | -1) {
+  const list = visibleCommits.value;
+  const cur = selected.value ? list.findIndex((c) => c.id === selected.value) : -1;
+  const next = stepIndex(cur, delta, list.length);
+  if (next === null) {
+    // At the tail: pull the next page in so the user can keep going.
+    if (delta > 0 && cur >= 0) loadMoreCommits();
+    return;
+  }
+  selected.value = list[next].id;
+  ensureRowVisible(next);
+}
+
+/** True when a text field or a modal has focus, so list keys must stay out of the way. */
+function keyboardBusy(): boolean {
+  const a = document.activeElement as HTMLElement | null;
+  if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.tagName === "SELECT" || a.isContentEditable)) return true;
+  if (paletteOpen.value) return true;
+  return !!document.querySelector(".backdrop, .pal-backdrop");
+}
+
+function onHistoryKey(e: KeyboardEvent) {
+  if (view.value !== "history" || !repo.value || keyboardBusy()) return;
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    moveSelection(1);
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    moveSelection(-1);
+  } else if (e.key === "Escape" && selected.value) {
+    e.preventDefault();
+    selected.value = null;
+  }
+}
 const branches = ref<BranchInfo[]>([]);
 const status = ref<StatusEntry[]>([]);
 const selected = ref<string | null>(null);
@@ -1277,6 +1336,7 @@ let ciPollTimer: number | undefined;
 watch([() => view.value, () => repo.value?.path], () => nextTick(measureHist));
 
 onMounted(async () => {
+  window.addEventListener("keydown", onHistoryKey);
   refreshConnections();
   refreshActions();
   unlisten = await listen("repo-changed", scheduleRefresh);
@@ -1303,6 +1363,7 @@ onUnmounted(() => {
   unlistenMenu?.();
   unlistenOpen?.();
   if (ciPollTimer) clearInterval(ciPollTimer);
+  window.removeEventListener("keydown", onHistoryKey);
 });
 
 /* ── Undo / redo (commit-level) ───────────────────────────────────── */
