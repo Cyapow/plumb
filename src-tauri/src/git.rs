@@ -2295,12 +2295,13 @@ pub async fn fetch(path: String) -> Result<String> {
 /// GCM_INTERACTIVE / credential.interactive silence Git Credential Manager,
 /// GIT_ASKPASS=true makes any other askpass return an empty answer so auth
 /// fails fast instead of prompting. Stored credentials still work.
+/// --no-write-fetch-head keeps a no-op fetch from touching .git/FETCH_HEAD, which would otherwise wake the repo watcher and trigger a full refresh every cycle.
 #[tauri::command]
 pub async fn fetch_quiet(path: String) -> Result<String> {
     spawn(move || {
         run_git_env(
             &path,
-            &["-c", "credential.interactive=false", "fetch", "--all", "--prune"],
+            &["-c", "credential.interactive=false", "fetch", "--no-write-fetch-head", "--all", "--prune"],
             &[("GCM_INTERACTIVE", "never"), ("GIT_ASKPASS", "true"), ("SSH_ASKPASS", "true")],
         )
     })

@@ -976,6 +976,7 @@ async function loadRepo(path: string) {
   loading.value = true;
   error.value = null;
   try {
+    clearCommitFilter();
     repo.value = await openRepo(path);
     const [c, b, s] = await Promise.all([
       listCommits(repo.value.path, FIRST_PAGE),
@@ -1081,8 +1082,9 @@ async function sync(fn: (path: string) => Promise<string>, label: string, gerund
   if (!repo.value || syncing.value) return;
   syncing.value = true;
   syncLabel.value = gerund;
-  // Don't race a background fetch for the remote ref locks.
-  if (bgFetchRun) await bgFetchRun;
+  // Don't race a background fetch for the remote ref locks — but don't wait
+  // forever on one that's stuck on a dead network either.
+  if (bgFetchRun) await Promise.race([bgFetchRun, new Promise<void>((r) => setTimeout(r, 10_000))]);
   try {
     const msg = await fn(repo.value.path);
     await refresh();
@@ -1398,9 +1400,9 @@ async function bgFetch() {
       // really 5 min, and a failing repo isn't retried on every trigger.
       lastBgFetch.set(path, Date.now());
       await fetchQuiet(path);
-      // Only ahead/behind can have changed for the UI; the fs watcher already
-      // schedules a full refresh when remote refs actually move.
-      if (repo.value?.path === path && !syncing.value) branches.value = await listBranches(path);
+      // Only ahead/behind can have changed for the UI; the fs watcher handles the rest if remote refs moved.
+      const b = await listBranches(path);
+      if (repo.value?.path === path && !syncing.value) branches.value = b;
     } catch {
       /* quiet: try again next interval */
     } finally {
