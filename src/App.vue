@@ -782,15 +782,17 @@ function histColsMenu(e: MouseEvent) {
 // Sidebar filter — narrows branches, remotes, stashes and tags at once.
 const sideFilter = ref("");
 const sideMatch = (s: string) => s.toLowerCase().includes(sideFilter.value.trim().toLowerCase());
+const sideFilterActive = computed(() => sideFilter.value.trim() !== "");
+function clearSideFilter() { sideFilter.value = ""; }
 
 // Branch tree (local + remote) + a stable colour per branch. Filtered by the
 // sidebar query when one is set.
-const fLocalBranches = computed(() => (sideFilter.value ? localBranches.value.filter((b) => sideMatch(b.name)) : localBranches.value));
-const fRemoteBranches = computed(() => (sideFilter.value ? remoteBranches.value.filter((b) => sideMatch(b.name)) : remoteBranches.value));
+const fLocalBranches = computed(() => (sideFilterActive.value ? localBranches.value.filter((b) => sideMatch(b.name)) : localBranches.value));
+const fRemoteBranches = computed(() => (sideFilterActive.value ? remoteBranches.value.filter((b) => sideMatch(b.name)) : remoteBranches.value));
 const localTree = computed(() => buildBranchTree(fLocalBranches.value));
 const remoteTree = computed(() => buildBranchTree(fRemoteBranches.value));
-const fStashes = computed(() => (sideFilter.value ? stashes.value.filter((s) => sideMatch(s.message)) : stashes.value));
-const fTags = computed(() => (sideFilter.value ? tags.value.filter((t) => sideMatch(t.name)) : tags.value));
+const fStashes = computed(() => (sideFilterActive.value ? stashes.value.filter((s) => sideMatch(s.message)) : stashes.value));
+const fTags = computed(() => (sideFilterActive.value ? tags.value.filter((t) => sideMatch(t.name)) : tags.value));
 const branchColors = computed(() => {
   const m = new Map<string, string>();
   branches.value.forEach((b, i) => m.set(b.name, laneColor(i)));
@@ -1956,13 +1958,13 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           </div>
         </div>
 
-        <div class="side-filter" :class="{ active: sideFilter }">
+        <div class="side-filter" :class="{ active: sideFilterActive }">
           <span class="sf-ico">⌕</span>
-          <input v-model="sideFilter" placeholder="Filter branches, tags, stashes…" spellcheck="false" @keydown.esc="sideFilter = ''" />
-          <button v-if="sideFilter" class="sf-x" title="Clear" @click="sideFilter = ''">✕</button>
+          <input v-model="sideFilter" placeholder="Filter branches, tags, stashes…" spellcheck="false" @keydown.esc="clearSideFilter" />
+          <button v-if="sideFilterActive" class="sf-x" title="Clear" @click="clearSideFilter">✕</button>
         </div>
-        <div v-if="sideFilter" class="side-note">
-          Showing matches for "{{ sideFilter.trim() }}" · <button class="sn-clear" @click="sideFilter = ''">Clear</button>
+        <div v-if="sideFilterActive" class="side-note">
+          Showing matches for "{{ sideFilter.trim() }}" · <button class="sn-clear" @click="clearSideFilter">Clear</button>
         </div>
 
         <nav class="side-section">
@@ -1988,7 +1990,7 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           </template>
         </nav>
 
-        <nav class="side-section" v-if="localTree.length || (sideFilter && localBranches.length)">
+        <nav class="side-section" v-if="localTree.length || (sideFilterActive && localBranches.length)">
           <div class="sect-head" @click="toggleSection('branches')">
             <span class="sect-chev">{{ collapsedSections.branches ? "▸" : "▾" }}</span>
             <span class="section-label">Branches</span>
@@ -2000,16 +2002,16 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           </template>
         </nav>
 
-        <nav class="side-section" v-if="remoteTree.length || remotes.length">
+        <nav class="side-section" v-if="remoteTree.length || remotes.length || (sideFilterActive && remoteBranches.length)">
           <div class="sect-head" @click="toggleSection('remotes')">
             <span class="sect-chev">{{ collapsedSections.remotes ? "▸" : "▾" }}</span>
             <span class="section-label">Remotes</span>
             <span class="plus" title="Manage remotes" @click.stop="remotesOpen = true">⚙</span>
           </div>
-          <div v-if="sideFilter && !remoteTree.length" class="sect-nomatch">no matches</div>
+          <div v-if="sideFilterActive && !remoteTree.length" class="sect-nomatch">no matches</div>
           <template v-else-if="!collapsedSections.remotes">
             <div class="sec-list" :style="{ maxHeight: secH('remotes') + 'px' }">
-              <!-- The configured remotes themselves, always listed: they're what
+              <!-- The configured remotes themselves (listed whenever the section has matches or no filter is active): they're what
                    you right-click to fetch, re-point, rename or remove. Their
                    fetched branches hang underneath. -->
               <div
@@ -2028,13 +2030,13 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           </template>
         </nav>
 
-        <nav class="side-section" v-if="!sideFilter || stashes.length">
+        <nav class="side-section" v-if="!sideFilterActive || stashes.length">
           <div class="sect-head" @click="toggleSection('stashes')">
             <span class="sect-chev">{{ collapsedSections.stashes ? "▸" : "▾" }}</span>
             <span class="section-label">Stashes</span>
             <span class="plus" title="Stash all changes" @click.stop="doStash">+</span>
           </div>
-          <div v-if="sideFilter && !fStashes.length" class="sect-nomatch">no matches</div>
+          <div v-if="sideFilterActive && !fStashes.length" class="sect-nomatch">no matches</div>
           <template v-else-if="!collapsedSections.stashes">
             <div class="sec-list" :style="{ maxHeight: secH('stashes') + 'px' }">
               <div
@@ -2053,7 +2055,7 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           </template>
         </nav>
 
-        <nav class="side-section" v-if="fTags.length || (sideFilter && tags.length)">
+        <nav class="side-section" v-if="fTags.length || (sideFilterActive && tags.length)">
           <div class="sect-head" @click="toggleSection('tags')">
             <span class="sect-chev">{{ collapsedSections.tags ? "▸" : "▾" }}</span>
             <span class="section-label">Tags</span>
@@ -2580,7 +2582,7 @@ kbd {
 .side-filter.active .sf-ico { color: var(--accent); }
 .side-note { margin: var(--space-1) var(--space-3) 0; font-size: 10.5px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .side-note .sn-clear { background: none; border: none; padding: 0; color: var(--accent); font-size: inherit; cursor: pointer; }
-.sect-nomatch { padding: 0 var(--space-3) var(--space-2) 22px; font-size: 11px; color: var(--text-faint); font-style: italic; }
+.sect-nomatch { padding: 0 var(--space-3) var(--space-2) calc(var(--space-3) + 12px); font-size: 11px; color: var(--text-faint); font-style: italic; }
 .tag-count { margin-left: auto; font-size: 10px; color: var(--accent); }
 
 .side-section { padding: var(--space-4) 0 0; }
