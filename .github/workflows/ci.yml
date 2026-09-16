@@ -27,6 +27,11 @@ jobs:
       - name: Force apt IPv4
         if: matrix.platform == 'ubuntu-22.04'
         run: echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4 >/dev/null
+      # The runner image ships a stale package index; without a refresh the
+      # cache action 404s on superseded .debs (and then caches the empty result).
+      - name: Refresh apt index
+        if: matrix.platform == 'ubuntu-22.04'
+        run: sudo apt-get update -qq
       - name: Install Linux system dependencies
         if: matrix.platform == 'ubuntu-22.04'
         uses: awalsh128/cache-apt-pkgs-action@v1

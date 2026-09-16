@@ -42,6 +42,11 @@ jobs:
       - name: Force apt IPv4
         if: startsWith(matrix.platform, 'ubuntu')
         run: echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4 >/dev/null
+      # The runner image ships a stale package index; without a refresh the
+      # cache action 404s on superseded .debs (and then caches the empty result).
+      - name: Refresh apt index
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: sudo apt-get update -qq
       - name: Install Linux system dependencies
         if: startsWith(matrix.platform, 'ubuntu')
         uses: awalsh128/cache-apt-pkgs-action@v1
