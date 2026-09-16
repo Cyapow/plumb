@@ -49,7 +49,7 @@ Two filters: the toolbar commit search (`commitFilter`) and the sidebar filter (
 
 **Toolbar commit search (History view)**
 
-- While `commitFilter` is non-empty, a strip at the top of `.hist-body` (above the rows, inside the scroll container so it scrolls with content? No — fixed above the rows, outside the scroll area, so it is always visible):
+- While `commitFilter` is non-empty, a strip between `.hist-head` and `.hist-body` (outside the scroll area, so it stays visible while scrolling):
   - `Filtering "foo" · 12 of 340 · Clear` for "In view" scope
   - `Searching all messages for "foo" · 12 results · Clear` / `Searching code in history for "foo" · 12 results · Clear` for the deep scopes; shows `Searching…` while `searching` is true.
   - "Clear" is a button that empties `commitFilter` (and `searchResults`).
