@@ -2237,12 +2237,13 @@ pub async fn uncommit(path: String) -> Result<()> {
 // `known_hosts`, and any credential helpers exactly as their terminal does.
 // All local reads/writes stay on libgit2.
 
-fn run_git(dir: &str, args: &[&str]) -> Result<String> {
+fn run_git_env(dir: &str, args: &[&str], envs: &[(&str, &str)]) -> Result<String> {
     let output = std::process::Command::new("git")
         .current_dir(dir)
         .args(args)
         // Never block on an interactive credential prompt — fail fast instead.
         .env("GIT_TERMINAL_PROMPT", "0")
+        .envs(envs.iter().copied())
         .output()
         .map_err(|e| GitError::Message(format!("Couldn't run git: {e}")))?;
 
@@ -2265,6 +2266,10 @@ fn run_git(dir: &str, args: &[&str]) -> Result<String> {
     }
 }
 
+fn run_git(dir: &str, args: &[&str]) -> Result<String> {
+    run_git_env(dir, args, &[])
+}
+
 /// Run a blocking closure off the main thread so the UI stays responsive.
 async fn spawn<T, F>(f: F) -> Result<T>
 where
@@ -2282,6 +2287,23 @@ pub async fn fetch(path: String) -> Result<String> {
     spawn(move || {
         let out = run_git(&path, &["fetch", "--all", "--prune"])?;
         Ok(if out.is_empty() { "Fetched".into() } else { out })
+    })
+    .await
+}
+
+/// Background fetch: like `fetch`, but must never surface a credential UI.
+/// GCM_INTERACTIVE / credential.interactive silence Git Credential Manager,
+/// GIT_ASKPASS=true makes any other askpass return an empty answer so auth
+/// fails fast instead of prompting. Stored credentials still work.
+/// --no-write-fetch-head keeps a no-op fetch from touching .git/FETCH_HEAD, which would otherwise wake the repo watcher and trigger a full refresh every cycle.
+#[tauri::command]
+pub async fn fetch_quiet(path: String) -> Result<String> {
+    spawn(move || {
+        run_git_env(
+            &path,
+            &["-c", "credential.interactive=false", "fetch", "--no-write-fetch-head", "--all", "--prune"],
+            &[("GCM_INTERACTIVE", "never"), ("GIT_ASKPASS", "true"), ("SSH_ASKPASS", "true")],
+        )
     })
     .await
 }

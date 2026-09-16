@@ -419,6 +419,7 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, Strin
 
         // ── Sync / network actions ──
         "fetch" => ok(tauri::async_runtime::block_on(git::fetch(s("path")))),
+        "fetch_quiet" => ok(tauri::async_runtime::block_on(git::fetch_quiet(s("path")))),
         "fetch_remote" => ok(block_on(git::fetch_remote(s("path"), s("name")))),
         "pull" => ok(tauri::async_runtime::block_on(git::pull(s("path")))),
         "push" => ok(tauri::async_runtime::block_on(git::push(s("path")))),

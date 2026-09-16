@@ -490,6 +490,10 @@ export function fetch(path: string): Promise<string> {
   return invoke("fetch", { path });
 }
 
+export function fetchQuiet(path: string): Promise<string> {
+  return invoke("fetch_quiet", { path });
+}
+
 export function fetchRemote(path: string, name: string): Promise<string> {
   return invoke("fetch_remote", { path, name });
 }

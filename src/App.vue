@@ -36,6 +36,7 @@ import {
   uncommit,
   commit as gitCommit,
   fetch as gitFetch,
+  fetchQuiet,
   pull as gitPull,
   push as gitPush,
   bisectStatus,
@@ -82,6 +83,8 @@ import {
   promptConfirm,
   toast,
   fullscreen,
+  contextMenu,
+  fileInspector,
   appState,
   toggleTheme,
   openSettings,
@@ -144,7 +147,7 @@ const FIRST_PAGE = 120;
 const allCommitsLoaded = ref(false);
 const loadingMore = ref(false);
 async function loadMoreCommits() {
-  if (!repo.value || loadingMore.value || allCommitsLoaded.value || commitFilter.value) return;
+  if (!repo.value || loadingMore.value || allCommitsLoaded.value || filterActive.value) return;
   loadingMore.value = true;
   try {
     const next = await listCommits(repo.value.path, COMMIT_PAGE, commits.value.length);
@@ -182,6 +185,65 @@ function onHistScroll(e: Event) {
 }
 function measureHist() {
   if (histBodyEl.value) histHeight.value = histBodyEl.value.clientHeight;
+}
+
+/**
+ * Index to move to when stepping a selection by `delta` in a list of `length`.
+ * Returns null when the move is a no-op (empty list, or already at the edge).
+ * `current` is -1 when nothing is selected: ↓ then picks the first row.
+ */
+function stepIndex(current: number, delta: number, length: number): number | null {
+  if (length === 0) return null;
+  if (current < 0) return delta > 0 ? 0 : null;
+  const next = current + delta;
+  if (next < 0 || next >= length) return null;
+  return next;
+}
+
+/** Scroll the virtualised history so row `idx` is inside the viewport (minimal move). */
+function ensureRowVisible(idx: number) {
+  const el = histBodyEl.value;
+  if (!el) return;
+  const top = idx * HIST_ROW_H;
+  const bottom = top + HIST_ROW_H;
+  if (top < el.scrollTop) el.scrollTop = top;
+  else if (bottom > el.scrollTop + el.clientHeight) el.scrollTop = bottom - el.clientHeight;
+}
+
+/** ↑/↓ in History: step the selection through the visible (filtered) commits. */
+function moveSelection(delta: 1 | -1) {
+  const list = visibleCommits.value;
+  const cur = selected.value ? list.findIndex((c) => c.id === selected.value) : -1;
+  const next = stepIndex(cur, delta, list.length);
+  if (next === null) {
+    // At the tail: pull the next page in so the user can keep going.
+    if (delta > 0 && cur >= 0) loadMoreCommits();
+    return;
+  }
+  selected.value = list[next].id;
+  ensureRowVisible(next);
+}
+
+/** True when a text field or a modal has focus, so list keys must stay out of the way. */
+function keyboardBusy(): boolean {
+  const a = document.activeElement as HTMLElement | null;
+  if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.tagName === "SELECT" || a.isContentEditable)) return true;
+  if (paletteOpen.value || fullscreen.open || contextMenu.open || fileInspector.open) return true;
+  return !!document.querySelector(".backdrop");
+}
+
+function onHistoryKey(e: KeyboardEvent) {
+  if (view.value !== "history" || !repo.value || keyboardBusy()) return;
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    moveSelection(1);
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    moveSelection(-1);
+  } else if (e.key === "Escape" && selected.value) {
+    e.preventDefault();
+    selected.value = null;
+  }
 }
 const branches = ref<BranchInfo[]>([]);
 const status = ref<StatusEntry[]>([]);
@@ -389,6 +451,7 @@ function toggleFavorite(path: string) {
 function selectTab(path: string) {
   if (activePath.value === path) return;
   captureTab(); // snapshot the tab we're leaving
+  clearCommitFilter();
   const cached = tabCache.get(path);
   if (cached) {
     restoreTab(cached); // instant paint from cache
@@ -567,6 +630,7 @@ type SearchScope = "view" | "message" | "code";
 const searchScope = ref<SearchScope>("view");
 const searchResults = ref<CommitRow[]>([]);
 const searching = ref(false);
+const SEARCH_LIMIT = 300;
 
 const visibleCommits = computed(() => {
   const q = commitFilter.value.trim();
@@ -582,31 +646,65 @@ const visibleCommits = computed(() => {
 });
 
 let searchTimer: number | undefined;
+// Guards against a slow search resolving after a newer one has started (or
+// the filter/scope/tab changed) and clobbering fresher results.
+let searchSeq = 0;
 async function runDeepSearch() {
+  const seq = ++searchSeq;
   if (!repo.value || searchScope.value === "view") return;
   const q = commitFilter.value.trim();
   if (!q) {
     searchResults.value = [];
+    searching.value = false;
     return;
   }
   searching.value = true;
   try {
-    searchResults.value = await searchAllCommits(repo.value.path, q, searchScope.value, 300);
+    const results = await searchAllCommits(repo.value.path, q, searchScope.value, SEARCH_LIMIT);
+    if (seq !== searchSeq) return;
+    searchResults.value = results;
   } catch {
+    if (seq !== searchSeq) return;
     searchResults.value = [];
   } finally {
-    searching.value = false;
+    if (seq === searchSeq) searching.value = false;
   }
 }
 // Debounce typing; re-run immediately when the scope changes.
 function onSearchInput() {
   if (searchScope.value === "view") return;
+  searching.value = true;
   clearTimeout(searchTimer);
   searchTimer = window.setTimeout(runDeepSearch, 300);
 }
 function onScopeChange() {
+  ++searchSeq;
+  clearTimeout(searchTimer);
   selected.value = null;
+  searching.value = searchScope.value !== "view" && !!commitFilter.value.trim();
   runDeepSearch();
+}
+
+/** Whether the search box holds a non-blank query (whitespace-only doesn't count as active). */
+const filterActive = computed(() => commitFilter.value.trim() !== "");
+
+/** One-line description of the active commit search, for the strip above the list. */
+const filterSummary = computed(() => {
+  const q = commitFilter.value.trim();
+  if (!q) return "";
+  const n = visibleCommits.value.length;
+  if (searchScope.value === "view") return `Filtering "${q}" · ${n} of ${commits.value.length} loaded`;
+  const what = searchScope.value === "code" ? "code in history" : "all messages";
+  if (searching.value) return `Searching ${what} for "${q}"…`;
+  const count = n >= SEARCH_LIMIT ? `${SEARCH_LIMIT}+` : `${n}`;
+  return `Searched ${what} for "${q}" · ${count} result${n === 1 ? "" : "s"}`;
+});
+function clearCommitFilter() {
+  commitFilter.value = "";
+  searchResults.value = [];
+  clearTimeout(searchTimer);
+  ++searchSeq;
+  searching.value = false;
 }
 
 const laneColor = (i: number) => `var(--lane-${i % 7})`;
@@ -621,7 +719,7 @@ const GRAPH_GUTTER_MAX = 300;
 const graphGutterManual = ref<number | null>(null);
 const graphScrollX = ref(0);
 const graphGutterPx = computed(() => {
-  if (commitFilter.value) return 130;
+  if (filterActive.value) return 130;
   if (graphGutterManual.value != null) return graphGutterManual.value;
   return Math.min(Math.max(130, graphWidth.value + 22), GRAPH_GUTTER_MAX);
 });
@@ -684,15 +782,17 @@ function histColsMenu(e: MouseEvent) {
 // Sidebar filter — narrows branches, remotes, stashes and tags at once.
 const sideFilter = ref("");
 const sideMatch = (s: string) => s.toLowerCase().includes(sideFilter.value.trim().toLowerCase());
+const sideFilterActive = computed(() => sideFilter.value.trim() !== "");
+function clearSideFilter() { sideFilter.value = ""; }
 
 // Branch tree (local + remote) + a stable colour per branch. Filtered by the
 // sidebar query when one is set.
-const fLocalBranches = computed(() => (sideFilter.value ? localBranches.value.filter((b) => sideMatch(b.name)) : localBranches.value));
-const fRemoteBranches = computed(() => (sideFilter.value ? remoteBranches.value.filter((b) => sideMatch(b.name)) : remoteBranches.value));
+const fLocalBranches = computed(() => (sideFilterActive.value ? localBranches.value.filter((b) => sideMatch(b.name)) : localBranches.value));
+const fRemoteBranches = computed(() => (sideFilterActive.value ? remoteBranches.value.filter((b) => sideMatch(b.name)) : remoteBranches.value));
 const localTree = computed(() => buildBranchTree(fLocalBranches.value));
 const remoteTree = computed(() => buildBranchTree(fRemoteBranches.value));
-const fStashes = computed(() => (sideFilter.value ? stashes.value.filter((s) => sideMatch(s.message)) : stashes.value));
-const fTags = computed(() => (sideFilter.value ? tags.value.filter((t) => sideMatch(t.name)) : tags.value));
+const fStashes = computed(() => (sideFilterActive.value ? stashes.value.filter((s) => sideMatch(s.message)) : stashes.value));
+const fTags = computed(() => (sideFilterActive.value ? tags.value.filter((t) => sideMatch(t.name)) : tags.value));
 const branchColors = computed(() => {
   const m = new Map<string, string>();
   branches.value.forEach((b, i) => m.set(b.name, laneColor(i)));
@@ -861,6 +961,7 @@ async function revalidateTab(path: string) {
     loadPrCount(path);
     loadCiMap(path);
     loadExtras(path);
+    void bgFetch();
   } catch {
     /* keep the cached view */
   }
@@ -875,6 +976,7 @@ async function loadRepo(path: string) {
   loading.value = true;
   error.value = null;
   try {
+    clearCommitFilter();
     repo.value = await openRepo(path);
     const [c, b, s] = await Promise.all([
       listCommits(repo.value.path, FIRST_PAGE),
@@ -897,6 +999,8 @@ async function loadRepo(path: string) {
     // Stream the next page in behind the first paint so scrolling has a buffer
     // ready without the initial switch waiting on it.
     if (!allCommitsLoaded.value) void loadMoreCommits();
+    // Quiet fetch after first paint so the behind-count is fresh for this repo.
+    void bgFetch();
   } catch (e) {
     error.value = String(e);
     // Fall back to the repo we were on (or home) rather than a blank screen.
@@ -978,6 +1082,9 @@ async function sync(fn: (path: string) => Promise<string>, label: string, gerund
   if (!repo.value || syncing.value) return;
   syncing.value = true;
   syncLabel.value = gerund;
+  // Don't race a background fetch for the remote ref locks — but don't wait
+  // forever on one that's stuck on a dead network either.
+  if (bgFetchRun) await Promise.race([bgFetchRun, new Promise<void>((r) => setTimeout(r, 10_000))]);
   try {
     const msg = await fn(repo.value.path);
     await refresh();
@@ -1272,11 +1379,49 @@ async function restoreSession() {
   if (s.view === "changes" || s.view === "history" || s.view === "prs") view.value = s.view;
 }
 
+/* ── Background fetch ─────────────────────────────────────────────── */
+// Fetch the active repo quietly every few minutes (and on open) so the
+// Pull button can show how far behind upstream we are. Silent by design:
+// no toast, no spinner, failures ignored (offline, no remotes, auth).
+const BG_FETCH_MS = 5 * 60_000;
+let bgFetchTimer: number | undefined;
+let bgFetching = false;
+let bgFetchRun: Promise<void> | null = null;
+const lastBgFetch = new Map<string, number>();
+async function bgFetch() {
+  if (!repo.value || syncing.value || bgFetching) return;
+  if (document.visibilityState !== "visible") return;
+  const path = repo.value.path;
+  if (Date.now() - (lastBgFetch.get(path) ?? 0) < BG_FETCH_MS) return;
+  bgFetching = true;
+  bgFetchRun = (async () => {
+    try {
+      // Stamp the throttle before the network round-trip so the interval is
+      // really 5 min, and a failing repo isn't retried on every trigger.
+      lastBgFetch.set(path, Date.now());
+      await fetchQuiet(path);
+      // Only ahead/behind can have changed for the UI; the fs watcher handles the rest if remote refs moved.
+      const b = await listBranches(path);
+      if (repo.value?.path === path && !syncing.value) branches.value = b;
+    } catch {
+      /* quiet: try again next interval */
+    } finally {
+      bgFetching = false;
+      bgFetchRun = null;
+    }
+  })();
+  await bgFetchRun;
+}
+function onVisibility() {
+  if (document.visibilityState === "visible") void bgFetch();
+}
+
 let ciPollTimer: number | undefined;
 // Re-measure the history viewport when it appears or the repo changes.
 watch([() => view.value, () => repo.value?.path], () => nextTick(measureHist));
 
 onMounted(async () => {
+  window.addEventListener("keydown", onHistoryKey);
   refreshConnections();
   refreshActions();
   unlisten = await listen("repo-changed", scheduleRefresh);
@@ -1297,12 +1442,17 @@ onMounted(async () => {
   ciPollTimer = window.setInterval(() => {
     if (repo.value) refreshCiMap(repo.value.path, true);
   }, 90_000);
+  bgFetchTimer = window.setInterval(() => bgFetch(), BG_FETCH_MS);
+  document.addEventListener("visibilitychange", onVisibility);
 });
 onUnmounted(() => {
   unlisten?.();
   unlistenMenu?.();
   unlistenOpen?.();
   if (ciPollTimer) clearInterval(ciPollTimer);
+  if (bgFetchTimer) clearInterval(bgFetchTimer);
+  document.removeEventListener("visibilitychange", onVisibility);
+  window.removeEventListener("keydown", onHistoryKey);
 });
 
 /* ── Undo / redo (commit-level) ───────────────────────────────────── */
@@ -1631,7 +1781,7 @@ async function opRun(fn: () => Promise<string>, label: string) {
 function scrollToCommit(id: string | null) {
   if (!id) return;
   view.value = "history";
-  commitFilter.value = "";
+  clearCommitFilter();
   selected.value = id;
   // Rows are virtualized, so the target may not be in the DOM — scroll by index.
   nextTick(() => {
@@ -1689,9 +1839,12 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
 
         <div class="sync-actions">
           <button class="btn" :disabled="syncing" @click="doFetch">Fetch <kbd>⌘R</kbd></button>
-          <button class="btn" :disabled="syncing" @click="doPull" @contextmenu="pullMenu" title="Pull · right-click for rebase / ff-only">Pull <kbd>⇧⌘P</kbd></button>
+          <button class="btn" :disabled="syncing" @click="doPull" @contextmenu="pullMenu" title="Pull · right-click for rebase / ff-only">
+            Pull<span v-if="headInfo && headInfo.behind"> ↓{{ headInfo.behind }}</span>
+            <kbd>⇧⌘P</kbd>
+          </button>
           <button class="btn btn-accent" :disabled="syncing" @click="doPush" @contextmenu="pushMenu" title="Push · right-click for force / tags / upstream">
-            Push<span v-if="headInfo && headInfo.ahead"> {{ headInfo.ahead }}</span>
+            Push<span v-if="headInfo && headInfo.ahead"> ↑{{ headInfo.ahead }}</span>
             <kbd>⌘P</kbd>
           </button>
         </div>
@@ -1712,7 +1865,7 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
 
       <div class="spacer" data-tauri-drag-region></div>
 
-      <div class="search">
+      <div class="search" :class="{ active: filterActive }">
         <span class="glyph">{{ searching ? "◌" : "⌕" }}</span>
         <input
           v-model="commitFilter"
@@ -1721,13 +1874,14 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           spellcheck="false"
           @focus="view = 'history'"
           @input="onSearchInput"
+          @keydown.esc="clearCommitFilter"
         />
         <select v-model="searchScope" class="scope" title="Search scope" @change="onScopeChange">
           <option value="view">In view</option>
           <option value="message">All · message</option>
           <option value="code">All · code</option>
         </select>
-        <span v-if="commitFilter" class="clear" title="Clear" @click="commitFilter = ''">✕</span>
+        <span v-if="filterActive" class="clear" title="Clear" @click="clearCommitFilter">✕</span>
       </div>
     </header>
 
@@ -1806,10 +1960,13 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           </div>
         </div>
 
-        <div class="side-filter">
+        <div class="side-filter" :class="{ active: sideFilterActive }">
           <span class="sf-ico">⌕</span>
-          <input v-model="sideFilter" placeholder="Filter branches, tags, stashes…" spellcheck="false" />
-          <button v-if="sideFilter" class="sf-x" title="Clear" @click="sideFilter = ''">✕</button>
+          <input v-model="sideFilter" placeholder="Filter branches, tags, stashes…" spellcheck="false" @keydown.esc="clearSideFilter" />
+          <button v-if="sideFilterActive" class="sf-x" title="Clear" @click="clearSideFilter">✕</button>
+        </div>
+        <div v-if="sideFilterActive" class="side-note">
+          Showing matches for "{{ sideFilter.trim() }}" · <button class="sn-clear" @click="clearSideFilter">Clear</button>
         </div>
 
         <nav class="side-section">
@@ -1835,26 +1992,28 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           </template>
         </nav>
 
-        <nav class="side-section" v-if="localTree.length">
+        <nav class="side-section" v-if="localTree.length || (sideFilterActive && localBranches.length)">
           <div class="sect-head" @click="toggleSection('branches')">
             <span class="sect-chev">{{ collapsedSections.branches ? "▸" : "▾" }}</span>
             <span class="section-label">Branches</span>
           </div>
-          <template v-if="!collapsedSections.branches">
+          <div v-if="!localTree.length" class="sect-nomatch">no matches</div>
+          <template v-else-if="!collapsedSections.branches">
             <div class="sec-list" :style="{ maxHeight: secH('branches') + 'px' }"><BranchTree :nodes="localTree" /></div>
             <div class="sec-grip" title="Drag to resize" @pointerdown="startSecResize('branches', $event)"></div>
           </template>
         </nav>
 
-        <nav class="side-section" v-if="remoteTree.length || (!sideFilter && remotes.length)">
+        <nav class="side-section" v-if="remoteTree.length || remotes.length || (sideFilterActive && remoteBranches.length)">
           <div class="sect-head" @click="toggleSection('remotes')">
             <span class="sect-chev">{{ collapsedSections.remotes ? "▸" : "▾" }}</span>
             <span class="section-label">Remotes</span>
             <span class="plus" title="Manage remotes" @click.stop="remotesOpen = true">⚙</span>
           </div>
-          <template v-if="!collapsedSections.remotes">
+          <div v-if="sideFilterActive && !remoteTree.length" class="sect-nomatch">no matches</div>
+          <template v-else-if="!collapsedSections.remotes">
             <div class="sec-list" :style="{ maxHeight: secH('remotes') + 'px' }">
-              <!-- The configured remotes themselves, always listed: they're what
+              <!-- The configured remotes themselves (listed whenever the section has matches or no filter is active): they're what
                    you right-click to fetch, re-point, rename or remove. Their
                    fetched branches hang underneath. -->
               <div
@@ -1873,13 +2032,14 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           </template>
         </nav>
 
-        <nav class="side-section" v-if="!sideFilter || fStashes.length">
+        <nav class="side-section" v-if="!sideFilterActive || stashes.length">
           <div class="sect-head" @click="toggleSection('stashes')">
             <span class="sect-chev">{{ collapsedSections.stashes ? "▸" : "▾" }}</span>
             <span class="section-label">Stashes</span>
             <span class="plus" title="Stash all changes" @click.stop="doStash">+</span>
           </div>
-          <template v-if="!collapsedSections.stashes">
+          <div v-if="sideFilterActive && !fStashes.length" class="sect-nomatch">no matches</div>
+          <template v-else-if="!collapsedSections.stashes">
             <div class="sec-list" :style="{ maxHeight: secH('stashes') + 'px' }">
               <div
                 v-for="s in fStashes"
@@ -1897,13 +2057,14 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           </template>
         </nav>
 
-        <nav class="side-section" v-if="fTags.length">
+        <nav class="side-section" v-if="fTags.length || (sideFilterActive && tags.length)">
           <div class="sect-head" @click="toggleSection('tags')">
             <span class="sect-chev">{{ collapsedSections.tags ? "▸" : "▾" }}</span>
             <span class="section-label">Tags</span>
             <span v-if="tags.length" class="tag-count mono">{{ fTags.length }}</span>
           </div>
-          <template v-if="!collapsedSections.tags">
+          <div v-if="!fTags.length" class="sect-nomatch">no matches</div>
+          <template v-else-if="!collapsedSections.tags">
             <div class="sec-list" :style="{ maxHeight: secH('tags') + 'px' }">
               <div
                 v-for="t in fTags"
@@ -1976,12 +2137,24 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
             <button class="cols-btn" title="Show/hide columns" @click="histColsMenu">⋯</button>
           </div>
 
+          <div v-if="filterActive" class="filter-strip">
+            <span class="fs-text">{{ filterSummary }}</span>
+            <button class="fs-clear" @click="clearCommitFilter">Clear</button>
+          </div>
+
           <div ref="histBodyEl" class="hist-body" @scroll="onHistScroll">
-            <div v-if="!commitFilter" class="graph-col" :style="{ width: graphColWidth + 'px' }" @wheel="onGraphWheel">
+            <div v-if="filterActive && !searching && !visibleCommits.length" class="filter-empty">
+              <div class="fe-title">No commits match "{{ commitFilter.trim() }}"</div>
+              <div class="fe-sub">
+                {{ searchScope === "view" ? 'Only loaded commits are searched in this scope — try "All · message" or "All · code".' : "Nothing in this repository's history matched." }}
+              </div>
+              <button class="btn" @click="clearCommitFilter">Clear search</button>
+            </div>
+            <div v-if="!filterActive" class="graph-col" :style="{ width: graphColWidth + 'px' }" @wheel="onGraphWheel">
               <CommitGraph :commits="commits" :style="{ transform: `translateX(${-graphScrollX}px)` }" @width="graphWidth = $event" />
             </div>
 
-            <div class="rows" :class="{ filtered: commitFilter }" :style="{ height: histWindow.total * 34 + 'px' }">
+            <div class="rows" :class="{ filtered: filterActive }" :style="{ height: histWindow.total * 34 + 'px' }">
             <div class="rows-window" :style="{ transform: `translateY(${histWindow.offset}px)` }">
             <div
               v-for="c in histWindow.items"
@@ -2340,6 +2513,8 @@ kbd {
 .search-input:focus { outline: none; }
 .search-input::placeholder { color: var(--text-faint); }
 .search .clear { flex: none; color: var(--text-faint); font-size: 11px; cursor: pointer; }
+.search.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--bg)); }
+.search.active .glyph { color: var(--accent); }
 .icon-btn {
   height: 30px;
   width: 30px;
@@ -2405,6 +2580,11 @@ kbd {
 .side-filter input:focus { outline: none; }
 .side-filter input::placeholder { color: var(--text-faint); }
 .side-filter .sf-x { flex: none; width: 16px; height: 16px; background: var(--raised); border: 1px solid var(--line); color: var(--text-dim); font-size: 9px; cursor: pointer; line-height: 1; }
+.side-filter.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--bg)); }
+.side-filter.active .sf-ico { color: var(--accent); }
+.side-note { margin: var(--space-1) var(--space-3) 0; font-size: 10.5px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.side-note .sn-clear { background: none; border: none; padding: 0; color: var(--accent); font-size: inherit; cursor: pointer; }
+.sect-nomatch { padding: 0 var(--space-3) var(--space-2) calc(var(--space-3) + 12px); font-size: 11px; color: var(--text-faint); font-style: italic; }
 .tag-count { margin-left: auto; font-size: 10px; color: var(--accent); }
 
 .side-section { padding: var(--space-4) 0 0; }
@@ -2491,6 +2671,24 @@ kbd {
 .cols-btn { position: absolute; top: 3px; right: 4px; width: 18px; height: 20px; background: var(--raised); border: 1px solid var(--line); color: var(--text-dim); font-size: 12px; line-height: 1; cursor: pointer; z-index: 3; }
 
 .hist-body { position: relative; flex: 1; overflow-y: auto; }
+.filter-strip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: 26px;
+  padding: 0 var(--space-3);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+  border-bottom: 1px solid var(--accent);
+  color: var(--text-mid);
+  font-size: 11.5px;
+}
+.filter-strip .fs-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.filter-strip .fs-clear { flex: none; height: 18px; padding: 0 8px; background: var(--raised); border: 1px solid var(--line); color: var(--text); font-size: 10.5px; cursor: pointer; }
+.filter-strip .fs-clear:hover { border-color: var(--accent); }
+.filter-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-2); padding: var(--space-6); text-align: center; z-index: 2; }
+.filter-empty .fe-title { font-size: 13px; color: var(--text); }
+.filter-empty .fe-sub { font-size: 11.5px; color: var(--text-faint); max-width: 380px; line-height: 1.45; }
 .graph-col { position: absolute; left: 12px; top: 0; overflow: hidden; z-index: 1; }
 .graph-col :deep(svg) { pointer-events: none; }
 
