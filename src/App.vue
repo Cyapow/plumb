@@ -671,6 +671,21 @@ function onScopeChange() {
   runDeepSearch();
 }
 
+/** One-line description of the active commit search, for the strip above the list. */
+const filterSummary = computed(() => {
+  const q = commitFilter.value.trim();
+  if (!q) return "";
+  const n = visibleCommits.value.length;
+  if (searchScope.value === "view") return `Filtering "${q}" · ${n} of ${commits.value.length}`;
+  const what = searchScope.value === "code" ? "code in history" : "all messages";
+  if (searching.value) return `Searching ${what} for "${q}"…`;
+  return `Searched ${what} for "${q}" · ${n} result${n === 1 ? "" : "s"}`;
+});
+function clearCommitFilter() {
+  commitFilter.value = "";
+  searchResults.value = [];
+}
+
 const laneColor = (i: number) => `var(--lane-${i % 7})`;
 
 // Text gutter reserved for the commit graph. Tracks the graph's real pixel
@@ -1825,7 +1840,7 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
 
       <div class="spacer" data-tauri-drag-region></div>
 
-      <div class="search">
+      <div class="search" :class="{ active: commitFilter }">
         <span class="glyph">{{ searching ? "◌" : "⌕" }}</span>
         <input
           v-model="commitFilter"
@@ -1840,7 +1855,7 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           <option value="message">All · message</option>
           <option value="code">All · code</option>
         </select>
-        <span v-if="commitFilter" class="clear" title="Clear" @click="commitFilter = ''">✕</span>
+        <span v-if="commitFilter" class="clear" title="Clear" @click="clearCommitFilter">✕</span>
       </div>
     </header>
 
@@ -2089,7 +2104,19 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
             <button class="cols-btn" title="Show/hide columns" @click="histColsMenu">⋯</button>
           </div>
 
+          <div v-if="commitFilter" class="filter-strip">
+            <span class="fs-text">{{ filterSummary }}</span>
+            <button class="fs-clear" @click="clearCommitFilter">Clear</button>
+          </div>
+
           <div ref="histBodyEl" class="hist-body" @scroll="onHistScroll">
+            <div v-if="commitFilter && !searching && !visibleCommits.length" class="filter-empty">
+              <div class="fe-title">No commits match "{{ commitFilter.trim() }}"</div>
+              <div class="fe-sub">
+                {{ searchScope === "view" ? "Only loaded commits are searched in this scope — try “All · message” or “All · code”." : "Nothing in this repository's history matched." }}
+              </div>
+              <button class="btn" @click="clearCommitFilter">Clear search</button>
+            </div>
             <div v-if="!commitFilter" class="graph-col" :style="{ width: graphColWidth + 'px' }" @wheel="onGraphWheel">
               <CommitGraph :commits="commits" :style="{ transform: `translateX(${-graphScrollX}px)` }" @width="graphWidth = $event" />
             </div>
@@ -2453,6 +2480,8 @@ kbd {
 .search-input:focus { outline: none; }
 .search-input::placeholder { color: var(--text-faint); }
 .search .clear { flex: none; color: var(--text-faint); font-size: 11px; cursor: pointer; }
+.search.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--bg)); }
+.search.active .glyph { color: var(--accent); }
 .icon-btn {
   height: 30px;
   width: 30px;
@@ -2604,6 +2633,24 @@ kbd {
 .cols-btn { position: absolute; top: 3px; right: 4px; width: 18px; height: 20px; background: var(--raised); border: 1px solid var(--line); color: var(--text-dim); font-size: 12px; line-height: 1; cursor: pointer; z-index: 3; }
 
 .hist-body { position: relative; flex: 1; overflow-y: auto; }
+.filter-strip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: 26px;
+  padding: 0 var(--space-3);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+  border-bottom: 1px solid var(--accent);
+  color: var(--text-mid);
+  font-size: 11.5px;
+}
+.filter-strip .fs-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.filter-strip .fs-clear { flex: none; height: 18px; padding: 0 8px; background: var(--raised); border: 1px solid var(--line); color: var(--text); font-size: 10.5px; cursor: pointer; }
+.filter-strip .fs-clear:hover { border-color: var(--accent); }
+.filter-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-2); padding: var(--space-6); text-align: center; z-index: 2; }
+.filter-empty .fe-title { font-size: 13px; color: var(--text); }
+.filter-empty .fe-sub { font-size: 11.5px; color: var(--text-faint); max-width: 380px; line-height: 1.45; }
 .graph-col { position: absolute; left: 12px; top: 0; overflow: hidden; z-index: 1; }
 .graph-col :deep(svg) { pointer-events: none; }
 
