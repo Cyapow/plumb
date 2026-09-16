@@ -958,6 +958,8 @@ async function loadRepo(path: string) {
     // Stream the next page in behind the first paint so scrolling has a buffer
     // ready without the initial switch waiting on it.
     if (!allCommitsLoaded.value) void loadMoreCommits();
+    // Quiet fetch after first paint so the behind-count is fresh for this repo.
+    void bgFetch(true);
   } catch (e) {
     error.value = String(e);
     // Fall back to the repo we were on (or home) rather than a blank screen.
@@ -1333,6 +1335,36 @@ async function restoreSession() {
   if (s.view === "changes" || s.view === "history" || s.view === "prs") view.value = s.view;
 }
 
+/* ── Background fetch ─────────────────────────────────────────────── */
+// Fetch the active repo quietly every few minutes (and on open) so the
+// Pull button can show how far behind upstream we are. Silent by design:
+// no toast, no spinner, failures ignored (offline, no remotes, auth).
+const BG_FETCH_MS = 5 * 60_000;
+let bgFetchTimer: number | undefined;
+let bgFetching = false;
+let lastBgFetch = 0;
+async function bgFetch(force = false) {
+  if (!repo.value || syncing.value || bgFetching) return;
+  if (document.visibilityState !== "visible") return;
+  if (!force && Date.now() - lastBgFetch < BG_FETCH_MS) return;
+  bgFetching = true;
+  const path = repo.value.path;
+  try {
+    await gitFetch(path);
+    lastBgFetch = Date.now();
+    // The repo watcher usually notices the ref update; refresh anyway in case
+    // it was a no-op fetch or the watcher was quiet, so ahead/behind is current.
+    if (repo.value?.path === path) await refresh();
+  } catch {
+    /* quiet: try again next tick */
+  } finally {
+    bgFetching = false;
+  }
+}
+function onVisibility() {
+  if (document.visibilityState === "visible") bgFetch();
+}
+
 let ciPollTimer: number | undefined;
 // Re-measure the history viewport when it appears or the repo changes.
 watch([() => view.value, () => repo.value?.path], () => nextTick(measureHist));
@@ -1359,12 +1391,16 @@ onMounted(async () => {
   ciPollTimer = window.setInterval(() => {
     if (repo.value) refreshCiMap(repo.value.path, true);
   }, 90_000);
+  bgFetchTimer = window.setInterval(() => bgFetch(), BG_FETCH_MS);
+  document.addEventListener("visibilitychange", onVisibility);
 });
 onUnmounted(() => {
   unlisten?.();
   unlistenMenu?.();
   unlistenOpen?.();
   if (ciPollTimer) clearInterval(ciPollTimer);
+  if (bgFetchTimer) clearInterval(bgFetchTimer);
+  document.removeEventListener("visibilitychange", onVisibility);
   window.removeEventListener("keydown", onHistoryKey);
 });
 
@@ -1752,7 +1788,10 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
 
         <div class="sync-actions">
           <button class="btn" :disabled="syncing" @click="doFetch">Fetch <kbd>⌘R</kbd></button>
-          <button class="btn" :disabled="syncing" @click="doPull" @contextmenu="pullMenu" title="Pull · right-click for rebase / ff-only">Pull <kbd>⇧⌘P</kbd></button>
+          <button class="btn" :disabled="syncing" @click="doPull" @contextmenu="pullMenu" title="Pull · right-click for rebase / ff-only">
+            Pull<span v-if="headInfo && headInfo.behind"> ↓{{ headInfo.behind }}</span>
+            <kbd>⇧⌘P</kbd>
+          </button>
           <button class="btn btn-accent" :disabled="syncing" @click="doPush" @contextmenu="pushMenu" title="Push · right-click for force / tags / upstream">
             Push<span v-if="headInfo && headInfo.ahead"> {{ headInfo.ahead }}</span>
             <kbd>⌘P</kbd>
