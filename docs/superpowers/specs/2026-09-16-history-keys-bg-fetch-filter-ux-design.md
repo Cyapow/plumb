@@ -26,22 +26,22 @@ Three small UX tweaks to the main window (`src/App.vue`).
 
 **Behaviour**
 
-- Every 5 minutes, and immediately when a repo is loaded or the active tab switches (`loadRepo`), run `git fetch --all --prune` for the active repo.
-- Silent: no toast, no `syncing`/progress bar, errors swallowed (offline, no remotes, auth prompt failures). It must never block or race the manual buttons: skipped while `syncing` is true, and a manual `sync()` runs regardless of a background fetch in flight (git tolerates concurrent fetches; worst case one reports "already up to date").
-- The existing `repo-changed` watcher picks up updated remote refs and refreshes branches, so `ahead`/`behind` update without extra plumbing. If the watcher does not fire for a ref-only change, call `refresh()` after a successful background fetch.
+- Every 5 minutes, and when a repo becomes active (`loadRepo` or a cached-tab switch via `revalidateTab`), run a quiet fetch (`fetch_quiet` backend command: `git -c credential.interactive=false fetch --no-write-fetch-head --all --prune` with `GCM_INTERACTIVE=never`, `GIT_ASKPASS=true` so no credential UI can appear) for the active repo, throttled per repo path (skip if that repo was fetched < 5 min ago).
+- Silent: no toast, no `syncing`/progress bar, errors swallowed (offline, no remotes, auth prompt failures). Skipped while `syncing` is true; a manual `sync()` marks itself syncing, then waits (at most 10 s) for any in-flight background fetch before starting, so the two never contend for remote ref locks.
+- After a successful fetch, reload only `branches` (`listBranches`) if the active repo is unchanged and no manual sync started meanwhile; the `repo-changed` watcher handles the full refresh when remote refs actually moved.
 - Paused while the window is hidden (`document.visibilityState !== "visible"`). On becoming visible, fetch immediately if the last background fetch was more than 5 minutes ago.
 - One timer for the app, not per tab — only the active repo is fetched.
 
 **UI**
 
-- Pull button: `Pull ↓N` when `headInfo.behind > 0`, mirroring the existing `Push N` for ahead. Push keeps its plain count; Pull uses the arrow because "behind" needs direction to read.
+- Pull button: `Pull ↓N` when `headInfo.behind > 0`; Push becomes `Push ↑N` so the pair reads symmetrically (matches the sidebar ↑↓).
 - Sidebar ↑/↓ per branch already exists — unchanged.
 
 **Code shape**
 
-- `bgFetch()` async, guarded by `repo`, `syncing`, `bgFetching` flags and a `lastBgFetch` timestamp.
+- `bgFetch()` async, guarded by `repo`, `syncing`, `bgFetching` and a per-path `lastBgFetch` map; exposes `bgFetchRun` so `sync()` can await it.
 - `bgFetchTimer` alongside `ciPollTimer`; both cleared on unmount.
-- `loadRepo()` calls `bgFetch()` after the first paint (`nextTick` / after `loadCore`), not before, so opening a repo stays fast.
+- `loadRepo()` and `revalidateTab()` call `bgFetch()` after their own loads, so opening a repo stays fast.
 
 ## 3. Make an active filter obvious
 
@@ -66,7 +66,7 @@ Two filters: the toolbar commit search (`commitFilter`) and the sidebar filter (
 
 **Code shape**
 
-- Computed `filterSummary` for the history strip text; the sidebar note is template-only.
+- Computed `filterActive` (trimmed) and `filterSummary` for the history strip; `clearCommitFilter()` (also called on tab switch and repo open); a `searchSeq` guard drops stale deep-search results; Esc in either input clears it. Sidebar mirrors with `sideFilterActive` and `clearSideFilter()`.
 - Styles: `.filter-strip`, `.filter-empty`, `.search.active`, `.side-filter.active`, `.sect-nomatch` — tokens from the existing palette (`--accent`, `--raised`, `--text-faint`).
 
 ## Out of scope
