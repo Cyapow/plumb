@@ -1956,10 +1956,13 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           </div>
         </div>
 
-        <div class="side-filter">
+        <div class="side-filter" :class="{ active: sideFilter }">
           <span class="sf-ico">⌕</span>
-          <input v-model="sideFilter" placeholder="Filter branches, tags, stashes…" spellcheck="false" />
+          <input v-model="sideFilter" placeholder="Filter branches, tags, stashes…" spellcheck="false" @keydown.esc="sideFilter = ''" />
           <button v-if="sideFilter" class="sf-x" title="Clear" @click="sideFilter = ''">✕</button>
+        </div>
+        <div v-if="sideFilter" class="side-note">
+          Showing matches for "{{ sideFilter.trim() }}" · <button class="sn-clear" @click="sideFilter = ''">Clear</button>
         </div>
 
         <nav class="side-section">
@@ -1985,24 +1988,26 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           </template>
         </nav>
 
-        <nav class="side-section" v-if="localTree.length">
+        <nav class="side-section" v-if="localTree.length || (sideFilter && localBranches.length)">
           <div class="sect-head" @click="toggleSection('branches')">
             <span class="sect-chev">{{ collapsedSections.branches ? "▸" : "▾" }}</span>
             <span class="section-label">Branches</span>
           </div>
-          <template v-if="!collapsedSections.branches">
+          <div v-if="!localTree.length" class="sect-nomatch">no matches</div>
+          <template v-else-if="!collapsedSections.branches">
             <div class="sec-list" :style="{ maxHeight: secH('branches') + 'px' }"><BranchTree :nodes="localTree" /></div>
             <div class="sec-grip" title="Drag to resize" @pointerdown="startSecResize('branches', $event)"></div>
           </template>
         </nav>
 
-        <nav class="side-section" v-if="remoteTree.length || (!sideFilter && remotes.length)">
+        <nav class="side-section" v-if="remoteTree.length || remotes.length">
           <div class="sect-head" @click="toggleSection('remotes')">
             <span class="sect-chev">{{ collapsedSections.remotes ? "▸" : "▾" }}</span>
             <span class="section-label">Remotes</span>
             <span class="plus" title="Manage remotes" @click.stop="remotesOpen = true">⚙</span>
           </div>
-          <template v-if="!collapsedSections.remotes">
+          <div v-if="sideFilter && !remoteTree.length" class="sect-nomatch">no matches</div>
+          <template v-else-if="!collapsedSections.remotes">
             <div class="sec-list" :style="{ maxHeight: secH('remotes') + 'px' }">
               <!-- The configured remotes themselves, always listed: they're what
                    you right-click to fetch, re-point, rename or remove. Their
@@ -2023,13 +2028,14 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           </template>
         </nav>
 
-        <nav class="side-section" v-if="!sideFilter || fStashes.length">
+        <nav class="side-section" v-if="!sideFilter || stashes.length">
           <div class="sect-head" @click="toggleSection('stashes')">
             <span class="sect-chev">{{ collapsedSections.stashes ? "▸" : "▾" }}</span>
             <span class="section-label">Stashes</span>
             <span class="plus" title="Stash all changes" @click.stop="doStash">+</span>
           </div>
-          <template v-if="!collapsedSections.stashes">
+          <div v-if="sideFilter && !fStashes.length" class="sect-nomatch">no matches</div>
+          <template v-else-if="!collapsedSections.stashes">
             <div class="sec-list" :style="{ maxHeight: secH('stashes') + 'px' }">
               <div
                 v-for="s in fStashes"
@@ -2047,13 +2053,14 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           </template>
         </nav>
 
-        <nav class="side-section" v-if="fTags.length">
+        <nav class="side-section" v-if="fTags.length || (sideFilter && tags.length)">
           <div class="sect-head" @click="toggleSection('tags')">
             <span class="sect-chev">{{ collapsedSections.tags ? "▸" : "▾" }}</span>
             <span class="section-label">Tags</span>
             <span v-if="tags.length" class="tag-count mono">{{ fTags.length }}</span>
           </div>
-          <template v-if="!collapsedSections.tags">
+          <div v-if="!fTags.length" class="sect-nomatch">no matches</div>
+          <template v-else-if="!collapsedSections.tags">
             <div class="sec-list" :style="{ maxHeight: secH('tags') + 'px' }">
               <div
                 v-for="t in fTags"
@@ -2569,6 +2576,11 @@ kbd {
 .side-filter input:focus { outline: none; }
 .side-filter input::placeholder { color: var(--text-faint); }
 .side-filter .sf-x { flex: none; width: 16px; height: 16px; background: var(--raised); border: 1px solid var(--line); color: var(--text-dim); font-size: 9px; cursor: pointer; line-height: 1; }
+.side-filter.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--bg)); }
+.side-filter.active .sf-ico { color: var(--accent); }
+.side-note { margin: var(--space-1) var(--space-3) 0; font-size: 10.5px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.side-note .sn-clear { background: none; border: none; padding: 0; color: var(--accent); font-size: inherit; cursor: pointer; }
+.sect-nomatch { padding: 0 var(--space-3) var(--space-2) 22px; font-size: 11px; color: var(--text-faint); font-style: italic; }
 .tag-count { margin-left: auto; font-size: 10px; color: var(--accent); }
 
 .side-section { padding: var(--space-4) 0 0; }
