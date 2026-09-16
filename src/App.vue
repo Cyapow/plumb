@@ -922,6 +922,7 @@ async function revalidateTab(path: string) {
     loadPrCount(path);
     loadCiMap(path);
     loadExtras(path);
+    void bgFetch();
   } catch {
     /* keep the cached view */
   }
@@ -959,7 +960,7 @@ async function loadRepo(path: string) {
     // ready without the initial switch waiting on it.
     if (!allCommitsLoaded.value) void loadMoreCommits();
     // Quiet fetch after first paint so the behind-count is fresh for this repo.
-    void bgFetch(true);
+    void bgFetch();
   } catch (e) {
     error.value = String(e);
     // Fall back to the repo we were on (or home) rather than a blank screen.
@@ -1342,16 +1343,16 @@ async function restoreSession() {
 const BG_FETCH_MS = 5 * 60_000;
 let bgFetchTimer: number | undefined;
 let bgFetching = false;
-let lastBgFetch = 0;
-async function bgFetch(force = false) {
+const lastBgFetch = new Map<string, number>();
+async function bgFetch() {
   if (!repo.value || syncing.value || bgFetching) return;
   if (document.visibilityState !== "visible") return;
-  if (!force && Date.now() - lastBgFetch < BG_FETCH_MS) return;
-  bgFetching = true;
   const path = repo.value.path;
+  if (Date.now() - (lastBgFetch.get(path) ?? 0) < BG_FETCH_MS) return;
+  bgFetching = true;
   try {
     await gitFetch(path);
-    lastBgFetch = Date.now();
+    lastBgFetch.set(path, Date.now());
     // The repo watcher usually notices the ref update; refresh anyway in case
     // it was a no-op fetch or the watcher was quiet, so ahead/behind is current.
     if (repo.value?.path === path) await refresh();
