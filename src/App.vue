@@ -82,6 +82,8 @@ import {
   promptConfirm,
   toast,
   fullscreen,
+  contextMenu,
+  fileInspector,
   appState,
   toggleTheme,
   openSettings,
@@ -225,8 +227,8 @@ function moveSelection(delta: 1 | -1) {
 function keyboardBusy(): boolean {
   const a = document.activeElement as HTMLElement | null;
   if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.tagName === "SELECT" || a.isContentEditable)) return true;
-  if (paletteOpen.value) return true;
-  return !!document.querySelector(".backdrop, .pal-backdrop");
+  if (paletteOpen.value || fullscreen.open || contextMenu.open || fileInspector.open) return true;
+  return !!document.querySelector(".backdrop");
 }
 
 function onHistoryKey(e: KeyboardEvent) {
