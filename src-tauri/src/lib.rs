@@ -478,6 +478,7 @@ pub fn run() {
             git::delete_branch,
             git::delete_tag,
             git::fetch,
+            git::fetch_quiet,
             git::fetch_remote,
             git::pull,
             git::push,

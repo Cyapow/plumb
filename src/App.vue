@@ -36,6 +36,7 @@ import {
   uncommit,
   commit as gitCommit,
   fetch as gitFetch,
+  fetchQuiet,
   pull as gitPull,
   push as gitPush,
   bisectStatus,
@@ -1040,6 +1041,8 @@ async function checkoutRemote(remoteBranch: string) {
 /* ── Remote sync ──────────────────────────────────────────────────── */
 async function sync(fn: (path: string) => Promise<string>, label: string, gerund: string) {
   if (!repo.value || syncing.value) return;
+  // Don't race a background fetch for the remote ref locks.
+  if (bgFetchRun) await bgFetchRun;
   syncing.value = true;
   syncLabel.value = gerund;
   try {
@@ -1343,6 +1346,7 @@ async function restoreSession() {
 const BG_FETCH_MS = 5 * 60_000;
 let bgFetchTimer: number | undefined;
 let bgFetching = false;
+let bgFetchRun: Promise<void> | null = null;
 const lastBgFetch = new Map<string, number>();
 async function bgFetch() {
   if (!repo.value || syncing.value || bgFetching) return;
@@ -1350,20 +1354,26 @@ async function bgFetch() {
   const path = repo.value.path;
   if (Date.now() - (lastBgFetch.get(path) ?? 0) < BG_FETCH_MS) return;
   bgFetching = true;
-  try {
-    await gitFetch(path);
-    lastBgFetch.set(path, Date.now());
-    // The repo watcher usually notices the ref update; refresh anyway in case
-    // it was a no-op fetch or the watcher was quiet, so ahead/behind is current.
-    if (repo.value?.path === path) await refresh();
-  } catch {
-    /* quiet: try again next tick */
-  } finally {
-    bgFetching = false;
-  }
+  bgFetchRun = (async () => {
+    try {
+      // Stamp the throttle before the network round-trip so the interval is
+      // really 5 min, and a failing repo isn't retried on every trigger.
+      lastBgFetch.set(path, Date.now());
+      await fetchQuiet(path);
+      // Only ahead/behind can have changed for the UI; the fs watcher already
+      // schedules a full refresh when remote refs actually move.
+      if (repo.value?.path === path && !syncing.value) branches.value = await listBranches(path);
+    } catch {
+      /* quiet: try again next interval */
+    } finally {
+      bgFetching = false;
+      bgFetchRun = null;
+    }
+  })();
+  await bgFetchRun;
 }
 function onVisibility() {
-  if (document.visibilityState === "visible") bgFetch();
+  if (document.visibilityState === "visible") void bgFetch();
 }
 
 let ciPollTimer: number | undefined;
@@ -1794,7 +1804,7 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
             <kbd>⇧⌘P</kbd>
           </button>
           <button class="btn btn-accent" :disabled="syncing" @click="doPush" @contextmenu="pushMenu" title="Push · right-click for force / tags / upstream">
-            Push<span v-if="headInfo && headInfo.ahead"> {{ headInfo.ahead }}</span>
+            Push<span v-if="headInfo && headInfo.ahead"> ↑{{ headInfo.ahead }}</span>
             <kbd>⌘P</kbd>
           </button>
         </div>
