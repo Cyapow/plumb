@@ -147,7 +147,7 @@ const FIRST_PAGE = 120;
 const allCommitsLoaded = ref(false);
 const loadingMore = ref(false);
 async function loadMoreCommits() {
-  if (!repo.value || loadingMore.value || allCommitsLoaded.value || commitFilter.value) return;
+  if (!repo.value || loadingMore.value || allCommitsLoaded.value || filterActive.value) return;
   loadingMore.value = true;
   try {
     const next = await listCommits(repo.value.path, COMMIT_PAGE, commits.value.length);
@@ -629,6 +629,7 @@ type SearchScope = "view" | "message" | "code";
 const searchScope = ref<SearchScope>("view");
 const searchResults = ref<CommitRow[]>([]);
 const searching = ref(false);
+const SEARCH_LIMIT = 300;
 
 const visibleCommits = computed(() => {
   const q = commitFilter.value.trim();
@@ -649,11 +650,12 @@ async function runDeepSearch() {
   const q = commitFilter.value.trim();
   if (!q) {
     searchResults.value = [];
+    searching.value = false;
     return;
   }
   searching.value = true;
   try {
-    searchResults.value = await searchAllCommits(repo.value.path, q, searchScope.value, 300);
+    searchResults.value = await searchAllCommits(repo.value.path, q, searchScope.value, SEARCH_LIMIT);
   } catch {
     searchResults.value = [];
   } finally {
@@ -663,27 +665,35 @@ async function runDeepSearch() {
 // Debounce typing; re-run immediately when the scope changes.
 function onSearchInput() {
   if (searchScope.value === "view") return;
+  searching.value = true;
   clearTimeout(searchTimer);
   searchTimer = window.setTimeout(runDeepSearch, 300);
 }
 function onScopeChange() {
   selected.value = null;
+  searching.value = searchScope.value !== "view" && !!commitFilter.value.trim();
   runDeepSearch();
 }
+
+/** Whether the search box holds a non-blank query (whitespace-only doesn't count as active). */
+const filterActive = computed(() => commitFilter.value.trim() !== "");
 
 /** One-line description of the active commit search, for the strip above the list. */
 const filterSummary = computed(() => {
   const q = commitFilter.value.trim();
   if (!q) return "";
   const n = visibleCommits.value.length;
-  if (searchScope.value === "view") return `Filtering "${q}" · ${n} of ${commits.value.length}`;
+  if (searchScope.value === "view") return `Filtering "${q}" · ${n} of ${commits.value.length} loaded`;
   const what = searchScope.value === "code" ? "code in history" : "all messages";
   if (searching.value) return `Searching ${what} for "${q}"…`;
-  return `Searched ${what} for "${q}" · ${n} result${n === 1 ? "" : "s"}`;
+  const count = n >= SEARCH_LIMIT ? `${SEARCH_LIMIT}+` : `${n}`;
+  return `Searched ${what} for "${q}" · ${count} result${n === 1 ? "" : "s"}`;
 });
 function clearCommitFilter() {
   commitFilter.value = "";
   searchResults.value = [];
+  clearTimeout(searchTimer);
+  searching.value = false;
 }
 
 const laneColor = (i: number) => `var(--lane-${i % 7})`;
@@ -698,7 +708,7 @@ const GRAPH_GUTTER_MAX = 300;
 const graphGutterManual = ref<number | null>(null);
 const graphScrollX = ref(0);
 const graphGutterPx = computed(() => {
-  if (commitFilter.value) return 130;
+  if (filterActive.value) return 130;
   if (graphGutterManual.value != null) return graphGutterManual.value;
   return Math.min(Math.max(130, graphWidth.value + 22), GRAPH_GUTTER_MAX);
 });
@@ -1756,7 +1766,7 @@ async function opRun(fn: () => Promise<string>, label: string) {
 function scrollToCommit(id: string | null) {
   if (!id) return;
   view.value = "history";
-  commitFilter.value = "";
+  clearCommitFilter();
   selected.value = id;
   // Rows are virtualized, so the target may not be in the DOM — scroll by index.
   nextTick(() => {
@@ -1840,7 +1850,7 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
 
       <div class="spacer" data-tauri-drag-region></div>
 
-      <div class="search" :class="{ active: commitFilter }">
+      <div class="search" :class="{ active: filterActive }">
         <span class="glyph">{{ searching ? "◌" : "⌕" }}</span>
         <input
           v-model="commitFilter"
@@ -1849,13 +1859,14 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
           spellcheck="false"
           @focus="view = 'history'"
           @input="onSearchInput"
+          @keydown.esc="clearCommitFilter"
         />
         <select v-model="searchScope" class="scope" title="Search scope" @change="onScopeChange">
           <option value="view">In view</option>
           <option value="message">All · message</option>
           <option value="code">All · code</option>
         </select>
-        <span v-if="commitFilter" class="clear" title="Clear" @click="clearCommitFilter">✕</span>
+        <span v-if="filterActive" class="clear" title="Clear" @click="clearCommitFilter">✕</span>
       </div>
     </header>
 
@@ -2104,24 +2115,24 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
             <button class="cols-btn" title="Show/hide columns" @click="histColsMenu">⋯</button>
           </div>
 
-          <div v-if="commitFilter" class="filter-strip">
+          <div v-if="filterActive" class="filter-strip">
             <span class="fs-text">{{ filterSummary }}</span>
             <button class="fs-clear" @click="clearCommitFilter">Clear</button>
           </div>
 
           <div ref="histBodyEl" class="hist-body" @scroll="onHistScroll">
-            <div v-if="commitFilter && !searching && !visibleCommits.length" class="filter-empty">
+            <div v-if="filterActive && !searching && !visibleCommits.length" class="filter-empty">
               <div class="fe-title">No commits match "{{ commitFilter.trim() }}"</div>
               <div class="fe-sub">
-                {{ searchScope === "view" ? "Only loaded commits are searched in this scope — try “All · message” or “All · code”." : "Nothing in this repository's history matched." }}
+                {{ searchScope === "view" ? 'Only loaded commits are searched in this scope — try "All · message" or "All · code".' : "Nothing in this repository's history matched." }}
               </div>
               <button class="btn" @click="clearCommitFilter">Clear search</button>
             </div>
-            <div v-if="!commitFilter" class="graph-col" :style="{ width: graphColWidth + 'px' }" @wheel="onGraphWheel">
+            <div v-if="!filterActive" class="graph-col" :style="{ width: graphColWidth + 'px' }" @wheel="onGraphWheel">
               <CommitGraph :commits="commits" :style="{ transform: `translateX(${-graphScrollX}px)` }" @width="graphWidth = $event" />
             </div>
 
-            <div class="rows" :class="{ filtered: commitFilter }" :style="{ height: histWindow.total * 34 + 'px' }">
+            <div class="rows" :class="{ filtered: filterActive }" :style="{ height: histWindow.total * 34 + 'px' }">
             <div class="rows-window" :style="{ transform: `translateY(${histWindow.offset}px)` }">
             <div
               v-for="c in histWindow.items"
