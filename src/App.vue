@@ -451,6 +451,7 @@ function toggleFavorite(path: string) {
 function selectTab(path: string) {
   if (activePath.value === path) return;
   captureTab(); // snapshot the tab we're leaving
+  clearCommitFilter();
   const cached = tabCache.get(path);
   if (cached) {
     restoreTab(cached); // instant paint from cache
@@ -645,7 +646,11 @@ const visibleCommits = computed(() => {
 });
 
 let searchTimer: number | undefined;
+// Guards against a slow search resolving after a newer one has started (or
+// the filter/scope/tab changed) and clobbering fresher results.
+let searchSeq = 0;
 async function runDeepSearch() {
+  const seq = ++searchSeq;
   if (!repo.value || searchScope.value === "view") return;
   const q = commitFilter.value.trim();
   if (!q) {
@@ -655,11 +660,14 @@ async function runDeepSearch() {
   }
   searching.value = true;
   try {
-    searchResults.value = await searchAllCommits(repo.value.path, q, searchScope.value, SEARCH_LIMIT);
+    const results = await searchAllCommits(repo.value.path, q, searchScope.value, SEARCH_LIMIT);
+    if (seq !== searchSeq) return;
+    searchResults.value = results;
   } catch {
+    if (seq !== searchSeq) return;
     searchResults.value = [];
   } finally {
-    searching.value = false;
+    if (seq === searchSeq) searching.value = false;
   }
 }
 // Debounce typing; re-run immediately when the scope changes.
@@ -670,6 +678,8 @@ function onSearchInput() {
   searchTimer = window.setTimeout(runDeepSearch, 300);
 }
 function onScopeChange() {
+  ++searchSeq;
+  clearTimeout(searchTimer);
   selected.value = null;
   searching.value = searchScope.value !== "view" && !!commitFilter.value.trim();
   runDeepSearch();
@@ -693,6 +703,7 @@ function clearCommitFilter() {
   commitFilter.value = "";
   searchResults.value = [];
   clearTimeout(searchTimer);
+  ++searchSeq;
   searching.value = false;
 }
 
