@@ -2,10 +2,11 @@
 // Presentational diff renderer — blue/red, line-numbered. Optional per-hunk
 // action button, and optional line selection for line-level staging.
 import { computed, ref, watch } from "vue";
-import type { DiffHunk, DiffLine } from "../lib/git";
+import type { DiffHunk } from "../lib/git";
 import { highlightLine, langFromPath } from "../lib/highlight";
 import { wordDiff, type Seg } from "../lib/worddiff";
 import { prefs } from "../lib/ui";
+import { buildSplitRows } from "../lib/diffrows";
 
 const props = defineProps<{
   hunks: DiffHunk[];
@@ -55,9 +56,6 @@ const emit = defineEmits<{
 const cls = (o: string) => (o === "+" ? "add" : o === "-" ? "del" : "ctx");
 const verb = () => (props.actionLabel?.startsWith("Unstage") ? "Unstage" : "Stage");
 
-// Side-by-side: pair deleted (left) with added (right) lines; context spans both.
-interface Cell { l: DiffLine; li: number }
-interface SplitRow { left?: Cell; right?: Cell; ctx?: boolean }
 const split = computed(() => prefs.split);
 
 // Side-by-side panes scroll horizontally on their own; keep their vertical
@@ -74,27 +72,7 @@ function onPaneScroll(from: "l" | "r") {
   dst.scrollTop = src.scrollTop;
   requestAnimationFrame(() => (syncing = false));
 }
-const splitRows = computed<SplitRow[][]>(() =>
-  props.hunks.map((h) => {
-    const rows: SplitRow[] = [];
-    const lines = h.lines;
-    let i = 0;
-    while (i < lines.length) {
-      if (lines[i].origin === " ") {
-        rows.push({ left: { l: lines[i], li: i }, right: { l: lines[i], li: i }, ctx: true });
-        i++;
-      } else {
-        const dels: Cell[] = [];
-        const adds: Cell[] = [];
-        while (i < lines.length && lines[i].origin === "-") dels.push({ l: lines[i], li: i++ });
-        while (i < lines.length && lines[i].origin === "+") adds.push({ l: lines[i], li: i++ });
-        const n = Math.max(dels.length, adds.length);
-        for (let k = 0; k < n; k++) rows.push({ left: dels[k], right: adds[k] });
-      }
-    }
-    return rows;
-  }),
-);
+const splitRows = computed(() => buildSplitRows(props.hunks));
 
 // Selected line indices, keyed "hunk:line".
 const picked = ref<Set<string>>(new Set());
