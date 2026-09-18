@@ -139,6 +139,9 @@ export interface FileDiff {
   staged: boolean;
   binary: boolean;
   hunks: DiffHunk[];
+  /** Diff exceeded the backend line cap and `force` wasn't set; hunks is empty. */
+  truncated: boolean;
+  total_lines: number;
 }
 
 export interface CommitResult {
@@ -332,8 +335,8 @@ export function watchRepo(path: string): Promise<void> {
   return invoke("watch_repo", { path });
 }
 
-export function fileDiff(path: string, file: string, staged: boolean): Promise<FileDiff> {
-  return invoke("file_diff", { path, file, staged });
+export function fileDiff(path: string, file: string, staged: boolean, force = false): Promise<FileDiff> {
+  return invoke("file_diff", { path, file, staged, force });
 }
 
 export function commit(
@@ -417,8 +420,8 @@ export function commitDetails(path: string, id: string): Promise<CommitDetail> {
   return invoke("commit_details", { path, id });
 }
 
-export function commitFileDiff(path: string, id: string, file: string): Promise<FileDiff> {
-  return invoke("commit_file_diff", { path, id, file });
+export function commitFileDiff(path: string, id: string, file: string, force = false): Promise<FileDiff> {
+  return invoke("commit_file_diff", { path, id, file, force });
 }
 
 export interface CompareSummary {
@@ -429,8 +432,8 @@ export interface CompareSummary {
 export function compareRefs(path: string, base: string, compare: string): Promise<CompareSummary> {
   return invoke("compare_refs", { path, base, compare });
 }
-export function compareFileDiff(path: string, base: string, compare: string, file: string): Promise<FileDiff> {
-  return invoke("compare_file_diff", { path, base, compare, file });
+export function compareFileDiff(path: string, base: string, compare: string, file: string, force = false): Promise<FileDiff> {
+  return invoke("compare_file_diff", { path, base, compare, file, force });
 }
 export function searchCommits(
   path: string,
