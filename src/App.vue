@@ -507,7 +507,17 @@ function revealActiveTab() {
   });
 }
 let tabsRo: ResizeObserver | null = null;
-watch(tabs, () => nextTick(() => { updateTabScroll(); revealActiveTab(); }), { deep: true });
+let tabCount = 0;
+watch(
+  tabs,
+  () => nextTick(() => {
+    updateTabScroll();
+    const grew = tabs.value.length > tabCount;
+    tabCount = tabs.value.length;
+    if (grew) revealActiveTab(); // a newly opened repo
+  }),
+  { deep: true },
+);
 watch(activePath, revealActiveTab);
 
 const stashes = ref<StashEntry[]>([]);
