@@ -21,12 +21,22 @@ function merge(tokens: string[], flags: boolean[]): Seg[] {
   return segs;
 }
 
+/** Token-pair budget for the LCS table. Above this the line is treated as
+ *  wholly changed — a minified line can tokenise to tens of thousands of
+ *  tokens, and an n×m table of that size is an out-of-memory crash. */
+const MAX_CELLS = 250_000;
+
 /** Returns [removed-line segments, added-line segments]. */
 export function wordDiff(a: string, b: string): [Seg[], Seg[]] {
   const at = tokenize(a);
   const bt = tokenize(b);
   const n = at.length;
   const m = bt.length;
+
+  if (n === 0 || m === 0 || n * m > MAX_CELLS) {
+    const whole = (s: string): Seg[] => (s ? [{ text: s, changed: true }] : []);
+    return [whole(a), whole(b)];
+  }
 
   // LCS length table.
   const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
