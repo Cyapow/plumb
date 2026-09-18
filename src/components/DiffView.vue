@@ -33,6 +33,7 @@ watch(() => [props.file, props.staged, props.repoPath] as const, () => (force.va
 let loadSeq = 0;
 async function load() {
   if (!props.file) {
+    loadSeq++;
     diff.value = null;
     return;
   }

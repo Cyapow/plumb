@@ -22,6 +22,7 @@ watch(() => fullscreen.activeFile, () => (force.value = false));
 let loadSeq = 0;
 async function loadActive() {
   if (!fullscreen.load || !fullscreen.activeFile) {
+    loadSeq++;
     diff.value = null;
     return;
   }
