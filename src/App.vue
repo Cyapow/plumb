@@ -507,7 +507,7 @@ function revealActiveTab() {
   });
 }
 let tabsRo: ResizeObserver | null = null;
-watch(tabs, () => nextTick(updateTabScroll), { deep: true });
+watch(tabs, () => nextTick(() => { updateTabScroll(); revealActiveTab(); }), { deep: true });
 watch(activePath, revealActiveTab);
 
 const stashes = ref<StashEntry[]>([]);
@@ -1456,9 +1456,8 @@ watch([() => view.value, () => repo.value?.path], () => nextTick(measureHist));
 
 onMounted(async () => {
   window.addEventListener("keydown", onHistoryKey);
-  tabsRo = new ResizeObserver(updateTabScroll);
+  tabsRo = new ResizeObserver(() => requestAnimationFrame(updateTabScroll));
   if (tabsEl.value) tabsRo.observe(tabsEl.value);
-  updateTabScroll();
   refreshConnections();
   refreshActions();
   unlisten = await listen("repo-changed", scheduleRefresh);
@@ -2440,6 +2439,7 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
   border-bottom: 1px solid var(--line);
 }
 .tabbar .spacer { flex: 1; }
+.tabbar > :not(.tabs-scroll) { flex-shrink: 0; }
 .home-tab, .repo-tab, .add-tab {
   display: flex; align-items: center; background: transparent;
   border: none; border-right: 1px solid var(--line); cursor: pointer;
