@@ -111,7 +111,7 @@ function measureRow() {
   const r = scroller()?.querySelector<HTMLElement>(".line, .pline");
   if (!r) return;
   const h = r.getBoundingClientRect().height;
-  if (h > 0 && Math.abs(h - rowH.value) > 0.01) {
+  if (h > 0 && Math.abs(h - rowH.value) > 0.001) {
     rowH.value = h;
     updateWindow();
   }
@@ -256,7 +256,7 @@ function pickedInHunk(hi: number): number[] {
                 <button v-if="actionLabel" class="hunk-btn" @click="emit('hunkAction', r.hi)">{{ actionLabel }}</button>
               </span>
             </div>
-            <div v-else class="pline" :class="r.row.ctx ? 'ctx' : r.row.left ? 'del' : 'empty'">
+            <div v-else class="pline" :class="r.row.ctx ? 'ctx' : r.row.left ? 'del' : 'filler'">
               <span class="ln">{{ r.row.left?.l.old_lineno ?? "" }}</span>
               <span v-if="r.row.left && segsFor(r.hi, r.row.left.li)" class="content"
                 ><span v-for="(s, k) in segsFor(r.hi, r.row.left.li)" :key="k" :class="{ word: s.changed }">{{ s.text }}</span></span
@@ -272,7 +272,7 @@ function pickedInHunk(hi: number): number[] {
           <div class="spacer" :style="{ height: padTop + 'px' }"></div>
           <template v-for="r in visibleSplit" :key="r.kind === 'head' ? 'h' + r.hi : r.hi + '-' + r.ri">
             <div v-if="r.kind === 'head'" class="hunk-head"><span class="hh-text">{{ hunks[r.hi].header }}</span></div>
-            <div v-else class="pline" :class="r.row.ctx ? 'ctx' : r.row.right ? 'add' : 'empty'">
+            <div v-else class="pline" :class="r.row.ctx ? 'ctx' : r.row.right ? 'add' : 'filler'">
               <span class="ln">{{ r.row.right?.l.new_lineno ?? "" }}</span>
               <span v-if="r.row.right && segsFor(r.hi, r.row.right.li)" class="content"
                 ><span v-for="(s, k) in segsFor(r.hi, r.row.right.li)" :key="k" :class="{ word: s.changed }">{{ s.text }}</span></span
@@ -354,7 +354,7 @@ function pickedInHunk(hi: number): number[] {
 .pline.add { background: var(--diff-add-bg); }
 .pline.add .ln { color: var(--diff-add-num); }
 .pline.del { background: var(--diff-del-bg); }
-.pline.empty { background: color-mix(in srgb, var(--line-soft) 40%, transparent); }
+.pline.filler { background: color-mix(in srgb, var(--line-soft) 40%, transparent); }
 .pline.add .word { background: color-mix(in srgb, var(--diff-add-num) 32%, transparent); }
 .pline.del .word { background: color-mix(in srgb, var(--diff-del-fg) 32%, transparent); }
 </style>
