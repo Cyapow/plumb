@@ -68,7 +68,7 @@ function openFile(file: string) {
     subtitle: detail.value.summary,
     files: detail.value.files,
     activeFile: file,
-    load: (f) => commitFileDiff(props.repoPath, id, f),
+    load: (f, force) => commitFileDiff(props.repoPath, id, f, force),
   });
 }
 

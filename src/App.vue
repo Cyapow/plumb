@@ -476,6 +476,50 @@ function goHome() {
   activePath.value = "";
 }
 
+// ── Tab strip overflow ──
+// Tabs never wrap: the strip scrolls horizontally, with ‹ › buttons that only
+// appear once there are more tabs than fit.
+const tabsEl = ref<HTMLElement | null>(null);
+const tabsOverflow = ref(false);
+const canScrollL = ref(false);
+const canScrollR = ref(false);
+function updateTabScroll() {
+  const el = tabsEl.value;
+  if (!el) return;
+  tabsOverflow.value = el.scrollWidth > el.clientWidth + 1;
+  canScrollL.value = el.scrollLeft > 0;
+  canScrollR.value = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+}
+function scrollTabs(dir: -1 | 1) {
+  tabsEl.value?.scrollBy({ left: dir * 200, behavior: "smooth" });
+}
+// A plain mouse wheel only produces deltaY; turn it into horizontal scroll.
+function onTabsWheel(e: WheelEvent) {
+  const el = tabsEl.value;
+  if (!el || !tabsOverflow.value || Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+  e.preventDefault();
+  el.scrollLeft += e.deltaY;
+}
+function revealActiveTab() {
+  nextTick(() => {
+    const el = tabsEl.value?.querySelector<HTMLElement>(`[data-path="${CSS.escape(activePath.value)}"]`);
+    el?.scrollIntoView({ inline: "nearest", block: "nearest" });
+  });
+}
+let tabsRo: ResizeObserver | null = null;
+let tabCount = 0;
+watch(
+  tabs,
+  () => nextTick(() => {
+    updateTabScroll();
+    const grew = tabs.value.length > tabCount;
+    tabCount = tabs.value.length;
+    if (grew) revealActiveTab(); // a newly opened repo
+  }),
+  { deep: true },
+);
+watch(activePath, revealActiveTab);
+
 const stashes = ref<StashEntry[]>([]);
 const tags = ref<TagInfo[]>([]);
 const files = ref<string[]>([]);
@@ -1422,6 +1466,8 @@ watch([() => view.value, () => repo.value?.path], () => nextTick(measureHist));
 
 onMounted(async () => {
   window.addEventListener("keydown", onHistoryKey);
+  tabsRo = new ResizeObserver(() => requestAnimationFrame(updateTabScroll));
+  if (tabsEl.value) tabsRo.observe(tabsEl.value);
   refreshConnections();
   refreshActions();
   unlisten = await listen("repo-changed", scheduleRefresh);
@@ -1453,6 +1499,7 @@ onUnmounted(() => {
   if (bgFetchTimer) clearInterval(bgFetchTimer);
   document.removeEventListener("visibilitychange", onVisibility);
   window.removeEventListener("keydown", onHistoryKey);
+  tabsRo?.disconnect();
 });
 
 /* ── Undo / redo (commit-level) ───────────────────────────────────── */
@@ -1811,17 +1858,22 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
       <button class="home-tab" :class="{ on: !showWorkspace }" title="Home" @click="goHome">
         <PlumbMark :size="15" />
       </button>
-      <button
-        v-for="t in tabs"
-        :key="t.path"
-        class="repo-tab"
-        :class="{ on: showWorkspace && activePath === t.path }"
-        :title="t.path"
-        @click="selectTab(t.path)"
-      >
-        <span class="tab-name ellipsis">{{ t.name }}</span>
-        <span class="tab-x" title="Close" @click.stop="closeTab(t.path)">✕</span>
-      </button>
+      <div class="tabs-scroll" ref="tabsEl" data-tauri-drag-region @scroll="updateTabScroll" @wheel="onTabsWheel">
+        <button
+          v-for="t in tabs"
+          :key="t.path"
+          class="repo-tab"
+          :class="{ on: showWorkspace && activePath === t.path }"
+          :title="t.path"
+          :data-path="t.path"
+          @click="selectTab(t.path)"
+        >
+          <span class="tab-name ellipsis">{{ t.name }}</span>
+          <span class="tab-x" title="Close" @click.stop="closeTab(t.path)">✕</span>
+        </button>
+      </div>
+      <button v-show="tabsOverflow" class="tab-arrow" :disabled="!canScrollL" title="Scroll tabs left" @click="scrollTabs(-1)">‹</button>
+      <button v-show="tabsOverflow" class="tab-arrow" :disabled="!canScrollR" title="Scroll tabs right" @click="scrollTabs(1)">›</button>
       <button class="add-tab" title="Open a repository" @click="goHome">+</button>
       <div class="spacer" data-tauri-drag-region></div>
       <button class="icon-btn" @click="openSettings()" title="Settings">⚙</button>
@@ -2397,13 +2449,29 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
   border-bottom: 1px solid var(--line);
 }
 .tabbar .spacer { flex: 1; }
+.tabbar > :not(.tabs-scroll) { flex-shrink: 0; }
 .home-tab, .repo-tab, .add-tab {
   display: flex; align-items: center; background: transparent;
   border: none; border-right: 1px solid var(--line); cursor: pointer;
   color: var(--text-mid); font-size: 12.5px;
 }
 .home-tab { padding: 0 14px; }
-.repo-tab { padding: 0 12px; gap: var(--space-2); max-width: 220px; }
+.tabs-scroll {
+  display: flex; align-items: stretch;
+  flex: 0 1 auto; min-width: 0;
+  overflow-x: auto; overflow-y: hidden;
+  scrollbar-width: none;
+}
+.tabs-scroll::-webkit-scrollbar { display: none; }
+.repo-tab { flex: none; padding: 0 12px; gap: var(--space-2); max-width: 220px; }
+.tab-arrow {
+  display: flex; align-items: center; justify-content: center;
+  flex: none; width: 24px; background: transparent; border: none;
+  border-right: 1px solid var(--line); cursor: pointer;
+  color: var(--text-dim); font-size: 16px; line-height: 1;
+}
+.tab-arrow:hover:not(:disabled) { color: var(--text); }
+.tab-arrow:disabled { color: var(--text-faint); cursor: default; }
 .home-tab.on, .repo-tab.on { color: var(--text); background: var(--surface); box-shadow: inset 0 -2px 0 var(--accent); }
 .repo-tab.on { font-weight: 600; }
 .repo-tab .tab-name { max-width: 160px; }

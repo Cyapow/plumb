@@ -118,6 +118,11 @@ pub struct FileDiff {
     pub staged: bool,
     pub binary: bool,
     pub hunks: Vec<DiffHunk>,
+    /// True when the diff exceeded `MAX_DIFF_LINES` and `force` wasn't set;
+    /// `hunks` is empty and the UI offers "Show anyway".
+    pub truncated: bool,
+    /// Total diff lines (context + added + removed), populated even when truncated.
+    pub total_lines: usize,
 }
 
 /// The result of creating a commit.
@@ -453,7 +458,7 @@ pub fn unstage_paths(path: String, paths: Vec<String>) -> Result<()> {
 
 /// Read a single file's diff. `staged` selects HEAD↔index vs index↔workdir.
 #[tauri::command]
-pub fn file_diff(path: String, file: String, staged: bool) -> Result<FileDiff> {
+pub fn file_diff(path: String, file: String, staged: bool, force: Option<bool>) -> Result<FileDiff> {
     let repo = open(&path)?;
     let mut opts = DiffOptions::new();
     opts.pathspec(&file);
@@ -474,16 +479,23 @@ pub fn file_diff(path: String, file: String, staged: bool) -> Result<FileDiff> {
         repo.diff_index_to_workdir(None, Some(&mut opts))?
     };
 
-    collect_file_diff(&diff, &file, staged)
+    collect_file_diff(&diff, &file, staged, force.unwrap_or(false))
 }
 
-/// Turn a libgit2 diff into a single file's hunks/lines.
-fn collect_file_diff(diff: &git2::Diff, file: &str, staged: bool) -> Result<FileDiff> {
+/// Diffs with more lines than this are withheld until the caller passes
+/// `force` — serialising and rendering them is what used to freeze the UI.
+pub const MAX_DIFF_LINES: usize = 20_000;
+
+/// Turn a libgit2 diff into a single file's hunks/lines. With `force == false`
+/// a diff over `MAX_DIFF_LINES` comes back with `truncated: true` and no hunks.
+fn collect_file_diff(diff: &git2::Diff, file: &str, staged: bool, force: bool) -> Result<FileDiff> {
     let mut result = FileDiff {
         path: file.to_string(),
         staged,
         binary: false,
         hunks: Vec::new(),
+        truncated: false,
+        total_lines: 0,
     };
 
     for i in 0..diff.deltas().len() {
@@ -499,7 +511,15 @@ fn collect_file_diff(diff: &git2::Diff, file: &str, staged: bool) -> Result<File
         match Patch::from_diff(diff, i)? {
             None => result.binary = true,
             Some(patch) => {
-                for h in 0..patch.num_hunks() {
+                let hunk_count = patch.num_hunks();
+                result.total_lines = (0..hunk_count)
+                    .map(|h| patch.num_lines_in_hunk(h).unwrap_or(0))
+                    .sum();
+                if result.total_lines > MAX_DIFF_LINES && !force {
+                    result.truncated = true;
+                    break;
+                }
+                for h in 0..hunk_count {
                     let (hunk, _) = patch.hunk(h)?;
                     let header = String::from_utf8_lossy(hunk.header()).trim_end().to_string();
                     let mut lines = Vec::new();
@@ -1431,7 +1451,7 @@ pub fn compare_refs(path: String, base: String, compare: String) -> Result<Compa
 
 /// Diff of one file between two refs.
 #[tauri::command]
-pub fn compare_file_diff(path: String, base: String, compare: String, file: String) -> Result<FileDiff> {
+pub fn compare_file_diff(path: String, base: String, compare: String, file: String, force: Option<bool>) -> Result<FileDiff> {
     let repo = open(&path)?;
     let base_tree = repo.revparse_single(&base)?.peel_to_commit()?.tree()?;
     let comp_tree = repo.revparse_single(&compare)?.peel_to_commit()?.tree()?;
@@ -1440,7 +1460,7 @@ pub fn compare_file_diff(path: String, base: String, compare: String, file: Stri
     opts.context_lines(3);
         apply_ignore_ws(&mut opts);
     let diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&comp_tree), Some(&mut opts))?;
-    collect_file_diff(&diff, &file, false)
+    collect_file_diff(&diff, &file, false, force.unwrap_or(false))
 }
 
 /// Search all history. `mode` = "message" (grep commit message) or "code"
@@ -1496,7 +1516,7 @@ pub async fn search_commits(
 
 /// Diff of one file within a commit (against its first parent).
 #[tauri::command]
-pub fn commit_file_diff(path: String, id: String, file: String) -> Result<FileDiff> {
+pub fn commit_file_diff(path: String, id: String, file: String, force: Option<bool>) -> Result<FileDiff> {
     let repo = open(&path)?;
     let oid = Oid::from_str(&id)?;
     let commit = repo.find_commit(oid)?;
@@ -1512,7 +1532,7 @@ pub fn commit_file_diff(path: String, id: String, file: String) -> Result<FileDi
     opts.context_lines(3);
         apply_ignore_ws(&mut opts);
     let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
-    collect_file_diff(&diff, &file, false)
+    collect_file_diff(&diff, &file, false, force.unwrap_or(false))
 }
 
 /// Check out a specific commit (detached HEAD).
@@ -2986,6 +3006,31 @@ mod tests {
         assert!(info.empty);
         let branches = list_branches(p(&d)).unwrap();
         assert!(branches.iter().any(|b| b.name == "trunk" && b.is_head && !b.is_remote));
+    }
+
+    #[test]
+    fn file_diff_gates_huge_diffs_unless_forced() {
+        let d = tmp();
+        init_repo(p(&d), None).unwrap();
+        let big: String = (0..MAX_DIFF_LINES + 1).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(d.path().join("big.txt"), big).unwrap();
+
+        let gated = file_diff(p(&d), "big.txt".into(), false, None).unwrap();
+        assert!(gated.truncated);
+        assert_eq!(gated.total_lines, MAX_DIFF_LINES + 1);
+        assert!(gated.hunks.is_empty());
+
+        let forced = file_diff(p(&d), "big.txt".into(), false, Some(true)).unwrap();
+        assert!(!forced.truncated);
+        assert_eq!(forced.total_lines, MAX_DIFF_LINES + 1);
+        let lines: usize = forced.hunks.iter().map(|h| h.lines.len()).sum();
+        assert_eq!(lines, MAX_DIFF_LINES + 1);
+
+        std::fs::write(d.path().join("small.txt"), "one\ntwo\n").unwrap();
+        let small = file_diff(p(&d), "small.txt".into(), false, None).unwrap();
+        assert!(!small.truncated);
+        assert_eq!(small.total_lines, 2);
+        assert_eq!(small.hunks[0].lines.len(), 2);
     }
 
     #[test]

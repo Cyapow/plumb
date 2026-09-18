@@ -42,7 +42,7 @@ async function run() {
       title: `${b} → ${c}`,
       subtitle: `${sum.ahead} ahead · ${sum.behind} behind · ${sum.files.length} file${sum.files.length === 1 ? "" : "s"}`,
       files: sum.files,
-      load: (file) => compareFileDiff(props.repoPath, b, c, file),
+      load: (file, force) => compareFileDiff(props.repoPath, b, c, file, force),
     });
     open.value = false;
   } catch (e) {
