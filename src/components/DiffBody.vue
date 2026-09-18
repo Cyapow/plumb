@@ -90,7 +90,9 @@ const rightPane = ref<HTMLElement | null>(null);
 const scroller = () => (split.value ? leftPane.value : rootEl.value);
 
 // Row height is line-height × font-size (fractional), so measure it rather
-// than hardcode; 20.4 is 12px × 1.7 from tokens.css as a first guess.
+// than hardcode; 20.4 is 12px × 1.7 from tokens.css as a first guess. It is
+// re-measured on every scroll frame because the code font size/line-height
+// can change live from Settings without the scroller resizing.
 const rowH = ref(20.4);
 const viewStart = ref(0);
 const viewEnd = ref(0);
@@ -103,6 +105,7 @@ function updateWindow() {
   const count = Math.ceil(el.clientHeight / rowH.value);
   viewStart.value = Math.max(0, first - OVERSCAN);
   viewEnd.value = Math.min(rowCount.value, first + count + OVERSCAN);
+  viewStart.value = Math.min(viewStart.value, viewEnd.value);
 }
 function measureRow() {
   const r = scroller()?.querySelector<HTMLElement>(".line, .pline");
@@ -118,6 +121,7 @@ function onScroll() {
   if (raf) return;
   raf = requestAnimationFrame(() => {
     raf = 0;
+    measureRow();
     updateWindow();
   });
 }
@@ -313,7 +317,7 @@ function pickedInHunk(hi: number): number[] {
 /* Windowed mode assumes every row is exactly one line tall so the spacer
    maths is exact: hunk headers lose the button's vertical margin. */
 .spacer { flex: none; }
-.virtual .hunk-head { height: calc(var(--code-line-h) * 1em); overflow: hidden; }
+.virtual .hunk-head { height: calc(var(--code-line-h) * 1em); overflow: clip; }
 .virtual .hunk-btn { margin: 0; padding: 0 8px; line-height: 16px; }
 .line { display: flex; }
 .line.selectable { cursor: pointer; }
@@ -342,7 +346,9 @@ function pickedInHunk(hi: number): number[] {
   width: max-content; min-width: 100%;
   font-family: var(--code-font); font-size: var(--code-font-size); line-height: var(--code-line-h);
 }
-.pline { display: flex; }
+/* An empty filler row has no line box; keep it one line tall so the two
+   panes (and the windowed spacer maths) stay in step. */
+.pline { display: flex; min-height: calc(var(--code-line-h) * 1em); }
 .pline .ln { width: 44px; flex: none; text-align: right; padding-right: var(--space-3); color: var(--text-faint); user-select: none; }
 .pline .content { white-space: pre; flex: 1; user-select: text; color: var(--text); padding-right: var(--space-3); }
 .pline.add { background: var(--diff-add-bg); }
