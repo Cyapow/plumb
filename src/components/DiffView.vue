@@ -24,21 +24,27 @@ const diff = ref<FileDiff | null>(null);
 const loading = ref(false);
 // "Show anyway" opt-in for diffs over the backend line cap. Reset when the
 // file changes, but not on refresh/reload so a stage/unstage keeps it open.
+// Declared before the load watcher so it runs first in the same flush.
 const force = ref(false);
 watch(() => [props.file, props.staged, props.repoPath] as const, () => (force.value = false));
 
+// Ignore responses from superseded loads (a slow forced load must not
+// overwrite the diff of a file selected afterwards).
+let loadSeq = 0;
 async function load() {
   if (!props.file) {
     diff.value = null;
     return;
   }
+  const mine = ++loadSeq;
   loading.value = true;
   try {
-    diff.value = await fileDiff(props.repoPath, props.file, props.staged, force.value);
+    const d = await fileDiff(props.repoPath, props.file, props.staged, force.value);
+    if (mine === loadSeq) diff.value = d;
   } catch {
-    diff.value = null;
+    if (mine === loadSeq) diff.value = null;
   } finally {
-    loading.value = false;
+    if (mine === loadSeq) loading.value = false;
   }
 }
 watch(() => [props.file, props.staged, props.repoPath, props.refresh, diffReloadKey.value] as const, load, {
