@@ -31,9 +31,13 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/** Lines longer than this are almost always minified/generated; highlighting
+ *  them is slow and adds nothing, so they're escaped and left plain. */
+const MAX_HL_CHARS = 2000;
+
 export function highlightLine(content: string, lang: string | undefined): string {
   if (!content) return "";
-  if (lang && hljs.getLanguage(lang)) {
+  if (lang && content.length <= MAX_HL_CHARS && hljs.getLanguage(lang)) {
     try {
       return hljs.highlight(content, { language: lang, ignoreIllegals: true }).value;
     } catch {
