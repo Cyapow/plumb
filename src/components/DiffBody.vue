@@ -15,6 +15,8 @@ const props = defineProps<{
   actionLabel?: string; // e.g. "Stage hunk" / "Unstage hunk"
   selectable?: boolean; // enable per-line selection
   filePath?: string | null; // for syntax highlighting
+  truncated?: boolean; // backend withheld the hunks (over its line cap)
+  totalLines?: number;
 }>();
 
 const lang = computed(() => langFromPath(props.filePath));
@@ -47,6 +49,7 @@ const segsFor = (hi: number, li: number) => wordSegs.value.get(`${hi}:${li}`);
 const emit = defineEmits<{
   (e: "hunkAction", index: number): void;
   (e: "lineAction", hunkIndex: number, lines: number[]): void;
+  (e: "showAnyway"): void;
 }>();
 
 const cls = (o: string) => (o === "+" ? "add" : o === "-" ? "del" : "ctx");
@@ -121,6 +124,10 @@ function pickedInHunk(hi: number): number[] {
   <div class="diff">
     <div v-if="loading" class="empty">Reading diff…</div>
     <div v-else-if="binary" class="empty">Binary file — no textual diff.</div>
+    <div v-else-if="truncated" class="empty">
+      <div>Large diff — {{ (totalLines ?? 0).toLocaleString() }} lines. Rendering may be slow.</div>
+      <button class="hunk-btn show-anyway" @click="emit('showAnyway')">Show anyway</button>
+    </div>
     <div v-else-if="hunks.length === 0" class="empty">{{ emptyText ?? "No changes to show." }}</div>
     <!-- Unified -->
     <div v-else-if="!split" class="hunks hunks-unified mono">
@@ -207,6 +214,7 @@ function pickedInHunk(hi: number): number[] {
 <style scoped>
 .diff { height: 100%; overflow: auto; background: var(--bg); }
 .empty { padding: var(--space-6); color: var(--text-faint); font-size: 12.5px; }
+.empty .show-anyway { margin-top: var(--space-3); }
 .hunks { font-family: var(--code-font); font-size: var(--code-font-size); line-height: var(--code-line-h); }
 /* Size to the widest line so row backgrounds and the hunk bar span the full
    horizontal scroll width, not just the viewport. min-width keeps it full-bleed

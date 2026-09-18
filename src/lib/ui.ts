@@ -157,7 +157,7 @@ export interface FullscreenDiff {
   subtitle: string;
   files: ChangedFile[];
   activeFile: string | null;
-  load: ((file: string) => Promise<FileDiff>) | null;
+  load: ((file: string, force?: boolean) => Promise<FileDiff>) | null;
 }
 
 export const fullscreen = shallowReactive<FullscreenDiff>({
@@ -174,7 +174,7 @@ export function openFullscreen(opts: {
   subtitle?: string;
   files: ChangedFile[];
   activeFile?: string | null;
-  load: (file: string) => Promise<FileDiff>;
+  load: (file: string, force?: boolean) => Promise<FileDiff>;
 }) {
   fullscreen.title = opts.title;
   fullscreen.subtitle = opts.subtitle ?? "";

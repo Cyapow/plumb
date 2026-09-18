@@ -356,9 +356,9 @@ function expand() {
     subtitle: `${files.value.length} files`,
     files: files.value.map((f) => ({ path: f.path, code: f.code })),
     activeFile: selected.value,
-    load: (file) => {
+    load: (file, force) => {
       const entry = files.value.find((f) => f.path === file);
-      return fileDiff(props.repoPath, file, entry ? diffStaged(entry) : false);
+      return fileDiff(props.repoPath, file, entry ? diffStaged(entry) : false, force);
     },
   });
 }

@@ -12,6 +12,9 @@ import ResizeHandle from "./ResizeHandle.vue";
 const diff = ref<FileDiff | null>(null);
 const loading = ref(false);
 const listW = ref(320);
+// "Show anyway" opt-in for diffs over the backend line cap; reset per file.
+const force = ref(false);
+watch(() => fullscreen.activeFile, () => (force.value = false));
 
 async function loadActive() {
   if (!fullscreen.load || !fullscreen.activeFile) {
@@ -20,12 +23,16 @@ async function loadActive() {
   }
   loading.value = true;
   try {
-    diff.value = await fullscreen.load(fullscreen.activeFile);
+    diff.value = await fullscreen.load(fullscreen.activeFile, force.value);
   } catch {
     diff.value = null;
   } finally {
     loading.value = false;
   }
+}
+function showAnyway() {
+  force.value = true;
+  void loadActive();
 }
 
 watch(() => [fullscreen.open, fullscreen.activeFile, diffReloadKey.value], loadActive, { immediate: true });
@@ -69,6 +76,9 @@ const codeClass = (c: string) =>
         :binary="diff?.binary"
         :loading="loading"
         :file-path="fullscreen.activeFile"
+        :truncated="diff?.truncated"
+        :total-lines="diff?.total_lines"
+        @show-anyway="showAnyway"
         empty-text="Select a file on the right."
       />
       <ResizeHandle v-model="listW" side="right" :min="220" :max="560" />

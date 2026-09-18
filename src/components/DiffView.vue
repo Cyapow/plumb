@@ -22,25 +22,32 @@ defineEmits<{
 
 const diff = ref<FileDiff | null>(null);
 const loading = ref(false);
+// "Show anyway" opt-in for diffs over the backend line cap. Reset when the
+// file changes, but not on refresh/reload so a stage/unstage keeps it open.
+const force = ref(false);
+watch(() => [props.file, props.staged, props.repoPath] as const, () => (force.value = false));
 
-watch(
-  () => [props.file, props.staged, props.repoPath, props.refresh, diffReloadKey.value] as const,
-  async () => {
-    if (!props.file) {
-      diff.value = null;
-      return;
-    }
-    loading.value = true;
-    try {
-      diff.value = await fileDiff(props.repoPath, props.file, props.staged);
-    } catch {
-      diff.value = null;
-    } finally {
-      loading.value = false;
-    }
-  },
-  { immediate: true },
-);
+async function load() {
+  if (!props.file) {
+    diff.value = null;
+    return;
+  }
+  loading.value = true;
+  try {
+    diff.value = await fileDiff(props.repoPath, props.file, props.staged, force.value);
+  } catch {
+    diff.value = null;
+  } finally {
+    loading.value = false;
+  }
+}
+watch(() => [props.file, props.staged, props.repoPath, props.refresh, diffReloadKey.value] as const, load, {
+  immediate: true,
+});
+function showAnyway() {
+  force.value = true;
+  void load();
+}
 </script>
 
 <template>
@@ -54,6 +61,9 @@ watch(
       :action-label="actionLabel"
       :selectable="selectable"
       :file-path="file"
+      :truncated="diff?.truncated"
+      :total-lines="diff?.total_lines"
+      @show-anyway="showAnyway"
       @hunk-action="(i) => $emit('hunkAction', i)"
       @line-action="(hi, lines) => $emit('lineAction', hi, lines)"
     />
