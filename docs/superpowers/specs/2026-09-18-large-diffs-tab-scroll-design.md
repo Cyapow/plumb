@@ -52,7 +52,7 @@ The existing `splitRows` computation moves into this module too (`buildSplitRows
 - Rendered: a top spacer `div` of `viewStart * rowH`, the slice `rows.slice(viewStart, viewEnd)` with the same markup as the non-virtual path, a bottom spacer of `(rows.length - viewEnd) * rowH`.
 - Unified: scroller is `.diff`. Split: scroller is the left pane; both panes render the same slice (they are already scroll-synced and share one row index space via `splitRows`).
 - In virtual mode hunk headers are forced to the line height (`height: calc(var(--code-line-h) * 1em)`, buttons lose their vertical margin) so every row is the same height and the spacer maths stays exact.
-- `wordSegs` stays eager (O(lines), cheap once guard §1 is in). Syntax highlighting now only runs for rendered rows — the main win.
+- Word-level diff is computed lazily per rendered row and memoised (`segsFor` + a `hi:li` cache cleared when `hunks` change), so neither word-diff nor syntax highlighting runs for rows outside the window — the main win. (Design originally kept `wordSegs` eager; changed after review of §1 showed aggregate cost still adds up.)
 - Line selection and hunk actions are keyed by `hi:li`, not DOM position, so they work unchanged in virtual mode.
 
 ## 5. Scrollable tab bar
