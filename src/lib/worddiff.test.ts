@@ -36,4 +36,13 @@ describe("wordDiff", () => {
     expect(d2).toEqual([{ text: shared + " y", changed: true }]);
     expect(a2).toEqual([{ text: shared + " z", changed: true }]);
   });
+
+  it("skips tokenising lines over 2000 chars", () => {
+    // 2002 chars but only 3 tokens per side (~9 LCS cells) — well under
+    // MAX_CELLS, so only the character-length pre-check can catch this.
+    const shared = "a".repeat(2000) + " ";
+    const [d3, a3] = wordDiff(shared + "y", shared + "z");
+    expect(d3).toEqual([{ text: shared + "y", changed: true }]);
+    expect(a3).toEqual([{ text: shared + "z", changed: true }]);
+  });
 });

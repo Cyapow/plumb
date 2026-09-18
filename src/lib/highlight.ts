@@ -32,7 +32,7 @@ function escapeHtml(s: string): string {
 }
 
 /** Lines longer than this are almost always minified/generated; highlighting
- *  them is slow and adds nothing, so they're escaped and left plain. */
+ * them is slow and adds nothing, so they're escaped and left plain. */
 const MAX_HL_CHARS = 2000;
 
 export function highlightLine(content: string, lang: string | undefined): string {
