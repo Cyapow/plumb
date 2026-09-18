@@ -398,8 +398,8 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, Strin
         "list_remotes" => ok(git::list_remotes(s("path"))),
         "list_files" => ok(tauri::async_runtime::block_on(git::list_files(s("path")))),
         "commit_details" => ok(git::commit_details(s("path"), s("id"))),
-        "commit_file_diff" => ok(git::commit_file_diff(s("path"), s("id"), s("file"))),
-        "file_diff" => ok(git::file_diff(s("path"), s("file"), b("staged"))),
+        "commit_file_diff" => ok(git::commit_file_diff(s("path"), s("id"), s("file"), args["force"].as_bool())),
+        "file_diff" => ok(git::file_diff(s("path"), s("file"), b("staged"), args["force"].as_bool())),
         "repo_state" => ok(git::repo_state(s("path"))),
         "bisect_status" => ok(git::bisect_status(s("path"))),
         "git_identity" => ok(git::git_identity(s("path"))),
@@ -415,7 +415,7 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, Strin
         ))),
         "get_config" => ok(git::get_config(s("path"), vs("keys"))),
         "compare_refs" => ok(git::compare_refs(s("path"), s("base"), s("compare"))),
-        "compare_file_diff" => ok(git::compare_file_diff(s("path"), s("base"), s("compare"), s("file"))),
+        "compare_file_diff" => ok(git::compare_file_diff(s("path"), s("base"), s("compare"), s("file"), args["force"].as_bool())),
 
         // ── Sync / network actions ──
         "fetch" => ok(tauri::async_runtime::block_on(git::fetch(s("path")))),
