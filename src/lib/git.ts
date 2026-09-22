@@ -95,6 +95,19 @@ export function installVscodeExtension(): Promise<string> {
   return invoke("install_vscode_extension");
 }
 
+export interface UpdateInfo {
+  current: string;
+  latest: string;
+  available: boolean;
+  url: string;
+  notes: string;
+}
+
+/** Ask GitHub whether a newer release than this build exists. */
+export function checkForUpdate(): Promise<UpdateInfo> {
+  return invoke("check_for_update");
+}
+
 /** The command an AI client should spawn for Plumb's MCP server: [binary, "mcp"]. */
 export function mcpCommand(): Promise<string[]> {
   return invoke("mcp_command");

@@ -217,6 +217,68 @@ async fn install_vscode_extension() -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// A release newer than the running build, if there is one.
+#[derive(serde::Serialize)]
+pub struct UpdateInfo {
+    /// The running version, so the UI needn't ask separately.
+    pub current: String,
+    /// Latest published version, e.g. "1.4.2" (tag `plumb-v1.4.2`).
+    pub latest: String,
+    /// True only when `latest` is strictly newer than `current`.
+    pub available: bool,
+    /// The release page to open.
+    pub url: String,
+    /// Release notes (may be empty).
+    pub notes: String,
+}
+
+/// Parse "1.4.10" into (1, 4, 10) for comparison; anything unparsable sorts
+/// lowest so a malformed tag never claims to be an update.
+fn semver(v: &str) -> (u32, u32, u32) {
+    let mut it = v.trim().trim_start_matches('v').split('.').map(|p| {
+        p.chars().take_while(char::is_ascii_digit).collect::<String>().parse::<u32>().unwrap_or(0)
+    });
+    (it.next().unwrap_or(0), it.next().unwrap_or(0), it.next().unwrap_or(0))
+}
+
+/// Ask GitHub for the latest published release and compare it with this build.
+/// Unauthenticated and read-only; the frontend throttles how often it calls.
+pub(crate) async fn latest_release() -> Result<UpdateInfo, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let current = env!("CARGO_PKG_VERSION").to_string();
+        let rel: serde_json::Value = ureq::get("https://api.github.com/repos/Cyapow/plumb/releases/latest")
+            .set("user-agent", "Plumb")
+            .set("accept", "application/vnd.github+json")
+            .timeout(std::time::Duration::from_secs(15))
+            .call()
+            .map_err(|e| e.to_string())?
+            .into_json()
+            .map_err(|e| e.to_string())?;
+        parse_release(&rel, current)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Turn GitHub's release payload into an `UpdateInfo` relative to `current`.
+fn parse_release(rel: &serde_json::Value, current: String) -> Result<UpdateInfo, String> {
+    // Releases are cut as `plumb-vX.Y.Z`; fall back to the display name.
+    let tag = rel["tag_name"].as_str().or_else(|| rel["name"].as_str()).unwrap_or("");
+    let latest = tag.trim().trim_start_matches("Plumb ").trim_start_matches("plumb-v").trim_start_matches('v').to_string();
+    if latest.is_empty() {
+        return Err("GitHub returned no release tag".into());
+    }
+    let url = rel["html_url"].as_str().unwrap_or("https://github.com/Cyapow/plumb/releases/latest").to_string();
+    let notes = rel["body"].as_str().unwrap_or("").to_string();
+    let available = semver(&latest) > semver(&current);
+    Ok(UpdateInfo { current, latest, available, url, notes })
+}
+
+#[tauri::command]
+async fn check_for_update() -> Result<UpdateInfo, String> {
+    latest_release().await
+}
+
 /// The command line an AI client should spawn for Plumb's MCP server:
 /// `[<this binary>, "mcp"]`. The frontend renders it into each client's config.
 #[tauri::command]
@@ -470,6 +532,7 @@ pub fn run() {
             set_autostart,
             install_vscode_extension,
             mcp_command,
+            check_for_update,
             install_claude_code_mcp,
             git::open_repo,
             git::is_repo,
@@ -650,4 +713,48 @@ pub fn run() {
             tauri::RunEvent::Exit => serve::clear_discovery(),
             _ => {}
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_release, semver};
+    use serde_json::json;
+
+    #[test]
+    fn semver_orders_numerically_not_lexically() {
+        assert!(semver("1.4.10") > semver("1.4.9"));
+        assert!(semver("1.10.0") > semver("1.9.9"));
+        assert_eq!(semver("v1.4.1"), semver("1.4.1"));
+        // Pre-release suffixes compare on the numeric part, and junk sorts lowest.
+        assert_eq!(semver("1.4.1-beta.2"), semver("1.4.1"));
+        assert_eq!(semver("not-a-version"), (0, 0, 0));
+    }
+
+    /// The shape GitHub actually returns for a Plumb release.
+    fn release(tag: &str) -> serde_json::Value {
+        json!({
+            "tag_name": tag,
+            "name": format!("Plumb {}", tag.trim_start_matches("plumb-v")),
+            "html_url": format!("https://github.com/Cyapow/plumb/releases/tag/{tag}"),
+            "body": "Automated build."
+        })
+    }
+
+    #[test]
+    fn parses_the_plumb_tag_and_flags_only_newer_releases() {
+        let newer = parse_release(&release("plumb-v1.4.2"), "1.4.1".into()).unwrap();
+        assert_eq!(newer.latest, "1.4.2");
+        assert!(newer.available);
+        assert!(newer.url.ends_with("plumb-v1.4.2"));
+
+        let same = parse_release(&release("plumb-v1.4.1"), "1.4.1".into()).unwrap();
+        assert!(!same.available, "the running version is not an update");
+
+        // A dev build ahead of the last release must not offer a downgrade.
+        let older = parse_release(&release("plumb-v1.4.1"), "1.5.0".into()).unwrap();
+        assert!(!older.available);
+
+        // No tag at all is an error, not a phantom "0.0.0" update.
+        assert!(parse_release(&json!({ "body": "" }), "1.4.1".into()).is_err());
+    }
 }
