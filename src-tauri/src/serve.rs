@@ -436,6 +436,8 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, Strin
         "checkout_commit" => ok(tauri::async_runtime::block_on(git::checkout_commit(s("path"), s("id")))),
         "create_branch" => ok(tauri::async_runtime::block_on(git::create_branch(s("path"), s("name"), s("id"), b("checkout")))),
         "delete_branch" => ok(git::delete_branch(s("path"), s("name"))),
+        "delete_branches" => ok(git::delete_branches(s("path"), vs("names"))),
+        "unmerged_branches" => ok(git::unmerged_branches(s("path"), vs("names"))),
         "delete_tag" => ok(git::delete_tag(s("path"), s("name"))),
         "merge_branch_ex" => ok(tauri::async_runtime::block_on(git::merge_branch_ex(
             s("path"), s("name"), b("squash"), b("noFf"), b("noCommit"), b("verifySignatures"), b("noVerify"),

@@ -31,6 +31,8 @@ import {
   checkoutCommit,
   createBranch,
   deleteBranch,
+  deleteBranches,
+  unmergedBranches,
   deleteTag,
   reset as gitReset,
   uncommit,
@@ -133,7 +135,7 @@ import InputDialog from "./components/InputDialog.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
 import HomePage from "./components/HomePage.vue";
 import BranchTree from "./components/BranchTree.vue";
-import { buildBranchTree } from "./lib/branchtree";
+import { buildBranchTree, flattenBranches } from "./lib/branchtree";
 import type { PaletteItem } from "./lib/palette";
 import { loadRecents, saveRecents, type RecentRepo } from "./lib/recents";
 
@@ -373,8 +375,10 @@ async function doBisectReset() {
 
 const compareOpen = ref(false);
 const compareBase = ref<string | null>(null);
-function openCompare(base?: string) {
+const compareWith = ref<string | null>(null);
+function openCompare(base?: string, compare?: string) {
   compareBase.value = base ?? null;
+  compareWith.value = compare ?? null;
   compareOpen.value = true;
 }
 
@@ -869,6 +873,48 @@ function startSecResize(id: string, e: PointerEvent) {
   window.addEventListener("pointerup", up);
 }
 
+// Sidebar branch selection. A plain click selects one branch (and jumps the
+// graph to its tip) without checking it out; ⌘-click toggles, ⇧-click extends
+// from the last plain click through the visible tree order. Multi-selection
+// unlocks bulk delete and two-way compare from the context menu.
+const selectedBranches = ref<Set<string>>(new Set());
+let branchAnchor: string | null = null;
+const visibleBranchOrder = computed(() => [...flattenBranches(localTree.value), ...flattenBranches(remoteTree.value)].map((b) => b.name));
+function selectBranch(e: MouseEvent, b: BranchInfo) {
+  const set = new Set(selectedBranches.value);
+  if (e.shiftKey && branchAnchor) {
+    const order = visibleBranchOrder.value;
+    const a = order.indexOf(branchAnchor);
+    const z = order.indexOf(b.name);
+    if (a !== -1 && z !== -1) {
+      if (!e.metaKey && !e.ctrlKey) set.clear();
+      for (let i = Math.min(a, z); i <= Math.max(a, z); i++) set.add(order[i]);
+      selectedBranches.value = set;
+      return;
+    }
+  }
+  if (e.metaKey || e.ctrlKey) {
+    if (set.has(b.name)) set.delete(b.name);
+    else set.add(b.name);
+  } else {
+    set.clear();
+    set.add(b.name);
+    scrollToCommit(b.target);
+  }
+  branchAnchor = b.name;
+  selectedBranches.value = set;
+}
+const clearBranchSelection = () => {
+  selectedBranches.value = new Set();
+  branchAnchor = null;
+};
+// Drop names that disappeared (deleted, filtered out by a repo switch).
+watch(branches, (bs) => {
+  const names = new Set(bs.map((b) => b.name));
+  const kept = [...selectedBranches.value].filter((n) => names.has(n));
+  if (kept.length !== selectedBranches.value.size) selectedBranches.value = new Set(kept);
+});
+
 // Shared with the recursive BranchTree.
 provide("branchActions", {
   checkout: (name: string) => {
@@ -876,10 +922,91 @@ provide("branchActions", {
     if (b?.is_remote) checkoutRemote(name);
     else checkout(name);
   },
-  jump: (target: string | null) => scrollToCommit(target),
-  menu: (e: MouseEvent, b: BranchInfo) => branchMenu(e, b),
+  select: selectBranch,
+  isSelected: (name: string) => selectedBranches.value.has(name),
+  menu: (e: MouseEvent, b: BranchInfo) => {
+    // Right-clicking inside a multi-selection acts on all of it; anywhere else
+    // re-targets the selection to that one branch.
+    if (selectedBranches.value.size > 1 && selectedBranches.value.has(b.name)) branchesMenu(e);
+    else {
+      selectedBranches.value = new Set([b.name]);
+      branchAnchor = b.name;
+      branchMenu(e, b);
+    }
+  },
   colorFor,
 });
+
+/** Delete every selected branch (local and remote) after one confirmation. */
+async function deleteSelectedBranches() {
+  if (!repo.value) return;
+  const path = repo.value.path;
+  const picked = branches.value.filter((b) => selectedBranches.value.has(b.name) && !b.is_head);
+  if (!picked.length) return;
+  const locals = picked.filter((b) => !b.is_remote);
+  const remotes = picked.filter((b) => b.is_remote);
+  const unmerged = new Set(locals.length ? await unmergedBranches(path, locals.map((b) => b.name)).catch(() => []) : []);
+  const lines = picked.map((b) => `• ${b.name}${unmerged.has(b.name) ? "  — not merged into " + headBranch.value : ""}`);
+  const notes: string[] = [];
+  if (unmerged.size) notes.push(`${unmerged.size} ${unmerged.size === 1 ? "branch has" : "branches have"} commits not merged into ${headBranch.value}; deleting them loses that work.`);
+  if (remotes.length) notes.push(`${remotes.length} remote ${remotes.length === 1 ? "branch" : "branches"} will be deleted on the server, for everyone.`);
+  const ok = await promptConfirm({
+    title: `Delete ${picked.length} branches?`,
+    body: [lines.join("\n"), ...notes].join("\n\n"),
+    confirmLabel: `Delete ${picked.length}`,
+    danger: true,
+  });
+  if (!ok) return;
+  const failed: string[] = [];
+  try {
+    if (locals.length) {
+      const res = await deleteBranches(path, locals.map((b) => b.name));
+      for (const r of res) if (r.error) failed.push(`${r.name}: ${r.error}`);
+    }
+    for (const b of remotes) {
+      const slash = b.name.indexOf("/");
+      const remote = slash === -1 ? "origin" : b.name.slice(0, slash);
+      const branch = slash === -1 ? b.name : b.name.slice(slash + 1);
+      await deleteRemoteBranch(path, remote, branch).catch((e) => failed.push(`${b.name}: ${e}`));
+    }
+  } finally {
+    clearBranchSelection();
+    await refresh();
+  }
+  if (failed.length) toast(`${failed.length} of ${picked.length} not deleted`, failed.join("\n"), "error");
+  else toast(`Deleted ${picked.length} branches`);
+}
+
+// Context menu for a multi-selection of branches.
+function branchesMenu(e: MouseEvent) {
+  const picked = branches.value.filter((b) => selectedBranches.value.has(b.name));
+  const deletable = picked.filter((b) => !b.is_head);
+  const items: MenuItem[] = [];
+  if (picked.length === 2) {
+    items.push({ label: `Compare ${picked[0].name} with ${picked[1].name}`, action: () => openCompare(picked[0].name, picked[1].name) });
+    items.push({ separator: true, label: "" });
+  }
+  items.push({ label: `Copy ${picked.length} names`, action: () => copy(picked.map((b) => b.name).join("\n"), "Branch names") });
+  items.push({ label: "Clear selection", action: clearBranchSelection });
+  items.push({ separator: true, label: "" });
+  items.push({
+    label: `Delete ${deletable.length} branches…`,
+    danger: true,
+    disabled: !deletable.length,
+    action: deleteSelectedBranches,
+  });
+  openContextMenu(e, items);
+}
+function onBranchKey(e: KeyboardEvent) {
+  if (!selectedBranches.value.size || keyboardBusy()) return;
+  if (e.key === "Escape") {
+    e.preventDefault();
+    clearBranchSelection();
+  } else if ((e.key === "Backspace" || e.key === "Delete") && selectedBranches.value.size > 1) {
+    e.preventDefault();
+    void deleteSelectedBranches();
+  }
+}
 
 // Drag the window from empty toolbar areas (hidden title bar → no native bar).
 function startDrag(e: MouseEvent) {
@@ -1525,6 +1652,7 @@ watch([() => view.value, () => repo.value?.path], () => nextTick(measureHist));
 
 onMounted(async () => {
   window.addEventListener("keydown", onHistoryKey);
+  window.addEventListener("keydown", onBranchKey);
   tabsRo = new ResizeObserver(() => requestAnimationFrame(updateTabScroll));
   if (tabsEl.value) tabsRo.observe(tabsEl.value);
   refreshConnections();
@@ -1558,6 +1686,7 @@ onUnmounted(() => {
   if (bgFetchTimer) clearInterval(bgFetchTimer);
   document.removeEventListener("visibilitychange", onVisibility);
   window.removeEventListener("keydown", onHistoryKey);
+  window.removeEventListener("keydown", onBranchKey);
   tabsRo?.disconnect();
 });
 
@@ -2368,6 +2497,7 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
       :branches="localBranches.map((b) => b.name)"
       :current-branch="repo.head_branch"
       :preset-base="compareBase"
+      :preset-compare="compareWith"
     />
     <PipelineDialog v-if="repo" v-model="pipelineOpen" :repo-path="repo.path" :sha="pipelineSha" :title="pipelineTitle" />
     <RunPipelineDialog

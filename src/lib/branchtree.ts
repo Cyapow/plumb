@@ -42,3 +42,16 @@ function sort(node: BranchNode) {
   });
   node.children.forEach(sort);
 }
+
+/** Leaves in display order (folders first, then names) — the order a shift-click range spans. */
+export function flattenBranches(nodes: BranchNode[]): BranchInfo[] {
+  const out: BranchInfo[] = [];
+  const walk = (ns: BranchNode[]) => {
+    for (const n of ns) {
+      if (n.branch) out.push(n.branch);
+      else walk(n.children);
+    }
+  };
+  walk(nodes);
+  return out;
+}

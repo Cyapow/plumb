@@ -1624,6 +1624,50 @@ pub fn delete_branch(path: String, name: String) -> Result<()> {
     Ok(())
 }
 
+/// Which of `names` (local branches) have commits HEAD doesn't contain — the
+/// ones a bulk delete should warn about. Unknown names are skipped.
+#[tauri::command]
+pub fn unmerged_branches(path: String, names: Vec<String>) -> Result<Vec<String>> {
+    let repo = open(&path)?;
+    let head = match repo.head().ok().and_then(|h| h.target()) {
+        Some(h) => h,
+        None => return Ok(names), // unborn HEAD: nothing is merged into it
+    };
+    let mut out = Vec::new();
+    for name in names {
+        let tip = match repo.find_branch(&name, BranchType::Local).ok().and_then(|b| b.get().target()) {
+            Some(t) => t,
+            None => continue,
+        };
+        let merged = tip == head || repo.graph_descendant_of(head, tip).unwrap_or(false);
+        if !merged {
+            out.push(name);
+        }
+    }
+    Ok(out)
+}
+
+/// Outcome of one branch in a bulk delete.
+#[derive(Serialize)]
+pub struct BranchDeleteResult {
+    pub name: String,
+    pub error: Option<String>,
+}
+
+/// Delete several local branches, continuing past failures so one bad name
+/// (e.g. the checked-out branch) doesn't abandon the rest.
+#[tauri::command]
+pub fn delete_branches(path: String, names: Vec<String>) -> Result<Vec<BranchDeleteResult>> {
+    let repo = open(&path)?;
+    Ok(names
+        .into_iter()
+        .map(|name| {
+            let r = repo.find_branch(&name, BranchType::Local).and_then(|mut b| b.delete());
+            BranchDeleteResult { name, error: r.err().map(|e| e.message().to_string()) }
+        })
+        .collect())
+}
+
 /// Delete a local tag by short name (e.g. "v1.2.3").
 #[tauri::command]
 pub fn delete_tag(path: String, name: String) -> Result<()> {
@@ -3012,6 +3056,40 @@ mod tests {
         assert!(info.empty);
         let branches = list_branches(p(&d)).unwrap();
         assert!(branches.iter().any(|b| b.name == "trunk" && b.is_head && !b.is_remote));
+    }
+
+    #[test]
+    fn bulk_delete_reports_unmerged_and_skips_head() {
+        let d = tmp();
+        init_repo(p(&d), Some("main".into())).unwrap();
+        set_git_identity(p(&d), "Ada".into(), "ada@example.com".into(), false).unwrap();
+        let repo = open(&p(&d)).unwrap();
+        let sig = repo.signature().unwrap();
+        let mut commit_here = |msg: &str, parents: &[&git2::Commit]| {
+            let tree_id = repo.index().unwrap().write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, parents).unwrap()
+        };
+        let base = commit_here("base", &[]);
+        let base_c = repo.find_commit(base).unwrap();
+        // merged: points at base, which HEAD contains.
+        repo.branch("merged", &base_c, false).unwrap();
+        // unmerged: one commit HEAD does not have.
+        repo.branch("unmerged", &base_c, false).unwrap();
+        repo.set_head("refs/heads/unmerged").unwrap();
+        commit_here("extra", &[&base_c]);
+        repo.set_head("refs/heads/main").unwrap();
+        drop(commit_here);
+
+        let un = unmerged_branches(p(&d), vec!["merged".into(), "unmerged".into(), "ghost".into()]).unwrap();
+        assert_eq!(un, vec!["unmerged".to_string()]);
+
+        let res = delete_branches(p(&d), vec!["merged".into(), "main".into(), "unmerged".into()]).unwrap();
+        assert!(res.iter().find(|r| r.name == "merged").unwrap().error.is_none());
+        assert!(res.iter().find(|r| r.name == "main").unwrap().error.is_some(), "checked-out branch must be refused");
+        assert!(res.iter().find(|r| r.name == "unmerged").unwrap().error.is_none());
+        let left: Vec<String> = list_branches(p(&d)).unwrap().into_iter().map(|b| b.name).collect();
+        assert_eq!(left, vec!["main".to_string()]);
     }
 
     #[test]

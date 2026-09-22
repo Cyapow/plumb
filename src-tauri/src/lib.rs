@@ -546,6 +546,8 @@ pub fn run() {
             git::reset,
             git::discard_paths,
             git::delete_branch,
+            git::delete_branches,
+            git::unmerged_branches,
             git::delete_tag,
             git::fetch,
             git::fetch_quiet,
