@@ -127,6 +127,7 @@ import RepoInfoDialog from "./components/RepoInfoDialog.vue";
 import IntegrateDialog from "./components/IntegrateDialog.vue";
 import StashSaveDialog from "./components/StashSaveDialog.vue";
 import StashApplyDialog from "./components/StashApplyDialog.vue";
+import SyncRecoveryDialog, { type RecoveryChoice } from "./components/SyncRecoveryDialog.vue";
 import WorkflowDialog from "./components/WorkflowDialog.vue";
 import InputDialog from "./components/InputDialog.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
@@ -1122,8 +1123,9 @@ async function checkoutRemote(remoteBranch: string) {
 }
 
 /* ── Remote sync ──────────────────────────────────────────────────── */
-async function sync(fn: (path: string) => Promise<string>, label: string, gerund: string) {
-  if (!repo.value || syncing.value) return;
+/** Run a network op with the syncing state; true on success. */
+async function sync(fn: (path: string) => Promise<string>, label: string, gerund: string): Promise<boolean> {
+  if (!repo.value || syncing.value) return false;
   syncing.value = true;
   syncLabel.value = gerund;
   // Don't race a background fetch for the remote ref locks — but don't wait
@@ -1134,11 +1136,68 @@ async function sync(fn: (path: string) => Promise<string>, label: string, gerund
     await refresh();
     loadCiMap(repo.value.path); // refresh CI badges after fetch/pull/push
     toast(label, msg);
+    // A pull that stopped on conflicts is "successful" as far as Git goes,
+    // but the user needs to resolve them before anything else.
+    if (state.value.conflicts) {
+      toast("Conflicts", "Resolve them, then Continue", "error");
+      conflictOpen.value = true;
+      return false;
+    }
+    return true;
   } catch (e) {
-    toast(`${label} failed`, String(e), "error");
+    const msg = String(e);
+    const reason = recoverable(label, msg);
+    if (reason) {
+      void openRecovery(reason, msg);
+    } else {
+      toast(`${label} failed`, msg, "error");
+    }
+    return false;
   } finally {
     syncing.value = false;
   }
+}
+
+/* ── Push / pull recovery ─────────────────────────────────────────── */
+// A rejected push (upstream moved) or a refused pull (dirty tree / diverged)
+// gets a choice — rebase, merge, or force — instead of a dead-end error toast.
+const recoveryOpen = ref(false);
+const recovery = ref<{ reason: "push" | "pull"; error: string }>({ reason: "push", error: "" });
+const headAheadBehind = computed(() => {
+  const h = branches.value.find((b) => b.is_head);
+  return { ahead: h?.ahead ?? 0, behind: h?.behind ?? 0 };
+});
+function recoverable(label: string, msg: string): "push" | "pull" | null {
+  const m = msg.toLowerCase();
+  if (label === "Push" && /non-fast-forward|fetch first|\[rejected\]|failed to push some refs/.test(m)) return "push";
+  if (label === "Pull" && /would be overwritten|uncommitted changes|commit or stash|divergent branches|not possible to fast-forward/.test(m)) return "pull";
+  return null;
+}
+async function openRecovery(reason: "push" | "pull", error: string) {
+  recovery.value = { reason, error };
+  // Refresh ahead/behind so the dialog can say how far apart the branches are.
+  if (repo.value) {
+    const path = repo.value.path;
+    try {
+      if (reason === "push") await fetchQuiet(path);
+      branches.value = await listBranches(path);
+    } catch {
+      /* the dialog still works without counts */
+    }
+  }
+  recoveryOpen.value = true;
+}
+async function recover(choice: RecoveryChoice) {
+  if (choice === "force") {
+    await sync((p) => pushAdvanced(p, { forceWithLease: true }), "Force push", "Pushing");
+    return;
+  }
+  const ok = await sync(
+    (p) => pullMode(p, choice, true),
+    "Pull",
+    choice === "rebase" ? "Rebasing onto upstream" : "Merging upstream",
+  );
+  if (ok && recovery.value.reason === "push") await sync(gitPush, "Push", "Pushing");
 }
 const doFetch = () => sync(gitFetch, "Fetch", "Fetching");
 const doPull = () => sync(gitPull, "Pull", "Pulling");
@@ -2341,6 +2400,17 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
     />
     <StashSaveDialog v-if="repo" v-model="stashSaveOpen" :repo-path="repo.path" @done="refresh" />
     <StashApplyDialog v-if="repo" v-model="stashApplyOpen" :repo-path="repo.path" :index="stashApplyTarget.index" :label="stashApplyTarget.label" @done="refresh" />
+    <SyncRecoveryDialog
+      v-if="repo"
+      v-model="recoveryOpen"
+      :reason="recovery.reason"
+      :upstream="headUpstream"
+      :ahead="headAheadBehind.ahead"
+      :behind="headAheadBehind.behind"
+      :dirty="status.length"
+      :error="recovery.error"
+      @choose="recover"
+    />
     <SubmodulesDialog v-if="repo" v-model="submodulesOpen" :repo-path="repo.path" @open="loadRepo" />
     <WorktreesDialog v-if="repo" v-model="worktreesOpen" :repo-path="repo.path" :branches="localBranches.map((b) => b.name)" @open="loadRepo" />
     <BisectDialog

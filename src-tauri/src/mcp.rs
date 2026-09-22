@@ -176,7 +176,7 @@ fn tools() -> Vec<Tool> {
         // ── Sync ──
         t("fetch", "fetch", "Fetch all remotes (prunes deleted remote branches).", Path, json!({}), &[], false, false),
         t("pull", "pull_mode", "Pull the current branch from its upstream.", Path,
-            json!({ "mode": enum_prop(&["merge", "rebase", "ff-only"], "How to integrate upstream changes (default merge).") }), &[], false, false),
+            json!({ "mode": enum_prop(&["merge", "rebase", "ff-only"], "How to integrate upstream changes (default merge)."), "autostash": prop("boolean", "Stash uncommitted changes first and reapply them after (use when the pull is refused for a dirty working tree).") }), &[], false, false),
         t("push", "push_advanced", "Push the current branch to its upstream (or a named remote).", Path,
             json!({ "remote": prop("string", "Remote name (default: the branch's upstream remote, else origin)."), "setUpstream": prop("boolean", "Set the upstream (-u) for a new branch."), "pushTags": prop("boolean", "Also push tags."), "forceWithLease": prop("boolean", "Force push, refusing if the remote moved (--force-with-lease).") }), &[], false, false),
 

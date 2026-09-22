@@ -503,7 +503,7 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, Strin
         "list_remote_branches" => ok(block_on(git::list_remote_branches(s("url")))),
         "push_branch" => ok(block_on(git::push_branch(s("path"), s("branch")))),
         "push_target" => ok(block_on(git::push_target(s("path"), s("remote"), s("remoteBranch"), b("setUpstream"), b("forceWithLease")))),
-        "pull_mode" => ok(block_on(git::pull_mode(s("path"), s("mode")))),
+        "pull_mode" => ok(block_on(git::pull_mode(s("path"), s("mode"), args["autostash"].as_bool()))),
         "push_advanced" => ok(block_on(git::push_advanced(s("path"), sopt("remote"), b("forceWithLease"), b("pushTags"), b("setUpstream")))),
         "add_remote" => ok(git::add_remote(s("path"), s("name"), s("url"))),
         "rename_remote" => ok(git::rename_remote(s("path"), s("from"), s("to"))),

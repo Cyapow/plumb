@@ -550,8 +550,9 @@ export function pushBranch(path: string, branch: string): Promise<string> {
   return invoke("push_branch", { path, branch });
 }
 
-export function pullMode(path: string, mode: "merge" | "rebase" | "ff-only"): Promise<string> {
-  return invoke("pull_mode", { path, mode });
+/** Pull with an explicit mode; `autostash` stashes and reapplies uncommitted changes around it. */
+export function pullMode(path: string, mode: "merge" | "rebase" | "ff-only", autostash = false): Promise<string> {
+  return invoke("pull_mode", { path, mode, autostash });
 }
 
 export function deleteRemoteBranch(path: string, remote: string, branch: string): Promise<string> {

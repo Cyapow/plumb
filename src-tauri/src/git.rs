@@ -2442,16 +2442,22 @@ pub async fn push_branch(path: String, branch: String) -> Result<String> {
 }
 
 /// Pull with an explicit integration mode: "merge", "rebase", or "ff-only".
+/// `autostash` stashes uncommitted changes first and reapplies them after —
+/// the recovery path when a pull is refused for a dirty working tree. Conflicts
+/// come back as a message (the operation stays in progress), not an error.
 #[tauri::command]
-pub async fn pull_mode(path: String, mode: String) -> Result<String> {
+pub async fn pull_mode(path: String, mode: String, autostash: Option<bool>) -> Result<String> {
     spawn(move || {
-        let args: &[&str] = match mode.as_str() {
-            "rebase" => &["pull", "--rebase"],
-            "ff-only" => &["pull", "--ff-only"],
-            _ => &["pull", "--no-edit"],
+        let mut args: Vec<&str> = match mode.as_str() {
+            "rebase" => vec!["pull", "--rebase"],
+            "ff-only" => vec!["pull", "--ff-only"],
+            _ => vec!["pull", "--no-rebase", "--no-edit"],
         };
-        let out = run_git(&path, args)?;
-        Ok(if out.is_empty() { "Pulled".into() } else { out })
+        if autostash.unwrap_or(false) {
+            args.push("--autostash");
+        }
+        let out = run_merge_like(&path, &args)?;
+        Ok(if out == "Done" { "Pulled".into() } else { out })
     })
     .await
 }
