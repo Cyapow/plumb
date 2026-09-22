@@ -38,7 +38,7 @@ struct Ctx {
 
 /// Where the running agent advertises itself so editors can find and reuse it
 /// instead of spawning their own server.
-fn discovery_path() -> Option<std::path::PathBuf> {
+pub(crate) fn discovery_path() -> Option<std::path::PathBuf> {
     #[cfg(target_os = "macos")]
     {
         let home = std::env::var("HOME").ok()?;
@@ -588,6 +588,18 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, Strin
             serde_json::from_value(args["ctx"].clone()).unwrap_or_default(),
         ))),
         "job_log" => ok(block_on(accounts::job_log(app.clone(), s("repoPath"), s("jobId")))),
+
+        // ── App window (MCP "open_in_plumb") ──
+        "focus_repo" => {
+            use tauri::Emitter;
+            let path = s("path");
+            if !git::is_repo(path.clone()) {
+                return Err(format!("{path} is not a Git repository"));
+            }
+            let _ = app.emit("open-path", path);
+            crate::show_main(app);
+            okv(Value::Null)
+        }
 
         // ── Native capability bridge (served-mode only) ──
         "open_url" => {

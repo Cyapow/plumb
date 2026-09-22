@@ -95,6 +95,16 @@ export function installVscodeExtension(): Promise<string> {
   return invoke("install_vscode_extension");
 }
 
+/** The command an AI client should spawn for Plumb's MCP server: [binary, "mcp"]. */
+export function mcpCommand(): Promise<string[]> {
+  return invoke("mcp_command");
+}
+
+/** Register the MCP server with Claude Code via `claude mcp add`. */
+export function installClaudeCodeMcp(): Promise<string> {
+  return invoke("install_claude_code_mcp");
+}
+
 export function listSystemFonts(): Promise<string[]> {
   return invoke("list_system_fonts");
 }

@@ -2,6 +2,7 @@
 # Plumb CLI shim — open a repository in the Plumb app:
 #   plumb            # open the current directory
 #   plumb <path>     # open <path>
+#   plumb mcp        # run the MCP server for AI clients (stdio)
 #
 # Install: copy to a directory on your PATH and make it executable, e.g.
 #   install -m 0755 scripts/plumb /usr/local/bin/plumb
@@ -9,14 +10,14 @@
 # Linux users who installed the .deb already have `plumb` on PATH — this shim is
 # mainly for macOS, where the binary lives inside the app bundle.
 set -e
-target="${1:-$PWD}"
+[ $# -eq 0 ] && set -- "$PWD"
 
 case "$(uname -s)" in
   Darwin)
-    exec /Applications/Plumb.app/Contents/MacOS/plumb "$target"
+    exec /Applications/Plumb.app/Contents/MacOS/plumb "$@"
     ;;
   *)
     # Linux/other: prefer the installed binary on PATH.
-    exec plumb-bin "$target" 2>/dev/null || exec /usr/bin/plumb "$target"
+    exec plumb-bin "$@" 2>/dev/null || exec /usr/bin/plumb "$@"
     ;;
 esac

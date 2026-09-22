@@ -129,6 +129,39 @@ right-click). *Open in Plumb (desktop)* launches the app instead.
 Then open the **Plumb** tool window (right dock). If the Plumb binary isn't at
 the default location, set the `PLUMB_BIN` environment variable to it.
 
+### AI assistants (MCP)
+
+Plumb ships a [Model Context Protocol](https://modelcontextprotocol.io) server —
+`plumb mcp` — so **Claude Code, Claude Desktop, Cursor, VS Code Copilot** and any
+other MCP client can work your repository through Plumb: status, log, diffs,
+blame, search, stage/commit, branches, merge/rebase, stash, pull/push, conflict
+resolution, worktrees, bisect, and (with an account connected) pull requests and
+CI. It's a thin stdio bridge to the same background `plumb serve` agent the editor
+panels use, so there's one implementation of every command and the agent's
+per-session token gates access. Destructive tools (reset, discard, delete…) are
+annotated so clients confirm before running them.
+
+**Setup** — open **Settings → Integrations → AI assistants** for one-click
+install buttons and a copyable config, or by hand:
+
+```bash
+# Claude Code
+claude mcp add --scope user plumb -- /Applications/Plumb.app/Contents/MacOS/plumb mcp
+```
+
+```json
+// Claude Desktop (claude_desktop_config.json), Cursor (~/.cursor/mcp.json), etc.
+{ "mcpServers": { "plumb": { "command": "/Applications/Plumb.app/Contents/MacOS/plumb", "args": ["mcp"] } } }
+```
+
+On Linux the binary is `plumb` on your `PATH`; on Windows it's `Plumb.exe` in the
+install directory. Tools act on the repository given by `path`, defaulting to the
+directory the client launched the server in (or `PLUMB_REPO`, or `plumb mcp <path>`).
+If Plumb isn't running, the server starts the menu-bar agent for you.
+
+> ChatGPT only connects to MCP servers over HTTPS, so it can't launch this local
+> stdio server directly; it would need to be exposed through a tunnel.
+
 ## Architecture
 
 - **Frontend:** Vue 3 + TypeScript (Vite). Design system in `src/styles/`.
