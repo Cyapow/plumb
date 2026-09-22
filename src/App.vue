@@ -30,6 +30,8 @@ import {
   checkoutRemoteBranch,
   checkoutCommit,
   createBranch,
+  checkForUpdate,
+  type UpdateInfo,
   deleteBranch,
   deleteBranches,
   unmergedBranches,
@@ -1624,6 +1626,31 @@ async function restoreSession() {
 // Pull button can show how far behind upstream we are. Silent by design:
 // no toast, no spinner, failures ignored (offline, no remotes, auth).
 const BG_FETCH_MS = 5 * 60_000;
+/* ── Update check ─────────────────────────────────────────────────── */
+// A quiet poll of the latest GitHub release. The banner appears once per new
+// version: dismissing remembers that version, so it stays gone until the next
+// one ships. Checked at launch and every 6 hours.
+const UPDATE_CHECK_MS = 6 * 60 * 60 * 1000;
+const update = ref<UpdateInfo | null>(null);
+const updateDismissed = ref(localStorage.getItem("plumb.updateDismissed") ?? "");
+const updateBanner = computed(() => {
+  const u = update.value;
+  return u && u.available && u.latest !== updateDismissed.value ? u : null;
+});
+function dismissUpdate() {
+  if (!update.value) return;
+  updateDismissed.value = update.value.latest;
+  localStorage.setItem("plumb.updateDismissed", update.value.latest);
+}
+async function pollUpdate() {
+  try {
+    update.value = await checkForUpdate();
+  } catch {
+    /* offline or rate-limited: try again next interval */
+  }
+}
+let updateTimer: number | undefined;
+
 let bgFetchTimer: number | undefined;
 let bgFetching = false;
 let bgFetchRun: Promise<void> | null = null;
@@ -1663,6 +1690,8 @@ watch([() => view.value, () => repo.value?.path], () => nextTick(measureHist));
 onMounted(async () => {
   window.addEventListener("keydown", onHistoryKey);
   window.addEventListener("keydown", onBranchKey);
+  void pollUpdate();
+  updateTimer = window.setInterval(() => void pollUpdate(), UPDATE_CHECK_MS);
   tabsRo = new ResizeObserver(() => requestAnimationFrame(updateTabScroll));
   if (tabsEl.value) tabsRo.observe(tabsEl.value);
   refreshConnections();
@@ -1697,6 +1726,7 @@ onUnmounted(() => {
   document.removeEventListener("visibilitychange", onVisibility);
   window.removeEventListener("keydown", onHistoryKey);
   window.removeEventListener("keydown", onBranchKey);
+  if (updateTimer) window.clearInterval(updateTimer);
   tabsRo?.disconnect();
 });
 
@@ -2149,6 +2179,16 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
       <button v-if="state.conflicts" class="op-btn" @click="conflictOpen = true">Resolve conflicts</button>
       <button class="op-btn" @click="opRun(() => opContinue(repo!.path), 'Continue')">Continue</button>
       <button class="op-btn danger" @click="opRun(() => opAbort(repo!.path), 'Abort')">Abort</button>
+    </div>
+
+    <!-- New release available -->
+    <div v-if="updateBanner" class="op-banner update">
+      <span class="op-text">
+        <strong>Plumb {{ updateBanner.latest }}</strong> is available — you're on {{ updateBanner.current }}.
+      </span>
+      <span class="grow"></span>
+      <button class="op-btn" @click="openUrl(updateBanner.url)">What's new ↗</button>
+      <button class="op-btn" @click="dismissUpdate">Dismiss</button>
     </div>
 
     <!-- Bisect in-progress banner -->
@@ -2721,6 +2761,9 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
   font-size: 12.5px;
 }
 .op-banner .grow { flex: 1; }
+/* Update notice: informational, so it uses a neutral lane colour rather than
+   the accent reserved for "something needs your attention". */
+.op-banner.update { background: color-mix(in srgb, var(--lane-3) 16%, var(--surface)); border-bottom-color: var(--lane-3); }
 .op-btn { height: 24px; padding: 0 12px; background: var(--raised); border: 1px solid var(--line); font-size: 11.5px; font-weight: 600; cursor: pointer; }
 .op-btn.danger { color: var(--accent); border-color: var(--accent); }
 

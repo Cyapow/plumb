@@ -591,6 +591,8 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, Strin
         ))),
         "job_log" => ok(block_on(accounts::job_log(app.clone(), s("repoPath"), s("jobId")))),
 
+        "check_for_update" => ok(block_on(crate::latest_release())),
+
         // ── App window (MCP "open_in_plumb") ──
         "focus_repo" => {
             use tauri::Emitter;

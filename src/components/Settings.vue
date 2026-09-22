@@ -27,7 +27,7 @@ import {
   type SettingsSection,
 } from "../lib/ui";
 import { BUILTIN_THEMES, MODERNIST_BASE, type Theme, type TokenKey } from "../lib/themes";
-import { getAutostart, setAutostart, installVscodeExtension, mcpCommand, installClaudeCodeMcp, listEditors, preferredEditor, setPreferredEditor, type EditorInfo } from "../lib/git";
+import { getAutostart, setAutostart, installVscodeExtension, mcpCommand, installClaudeCodeMcp, checkForUpdate, type UpdateInfo, listEditors, preferredEditor, setPreferredEditor, type EditorInfo } from "../lib/git";
 import { openUrl, openFile } from "../lib/native";
 import { toast } from "../lib/ui";
 import AiProvidersPanel from "./AiProvidersPanel.vue";
@@ -138,6 +138,30 @@ async function installMcpClaude() {
     mcpInstalling.value = false;
   }
 }
+
+// About: the running version, and a manual update check (the app also checks
+// on launch and shows a banner when a newer release exists).
+const update = ref<UpdateInfo | null>(null);
+const checking = ref(false);
+const checkErr = ref("");
+async function checkUpdate() {
+  checking.value = true;
+  checkErr.value = "";
+  try {
+    update.value = await checkForUpdate();
+  } catch (e) {
+    checkErr.value = String(e);
+  } finally {
+    checking.value = false;
+  }
+}
+watch(
+  () => settings.section,
+  (s) => {
+    if (s === "about" && !update.value && !checking.value) void checkUpdate();
+  },
+  { immediate: true },
+);
 
 const sections: { id: SettingsSection; label: string }[] = [
   { id: "accounts", label: "Accounts" },
@@ -488,6 +512,20 @@ function hex(v: string | undefined): string {
               <div class="about-mark"><PlumbMark :size="48" /></div>
               <div class="about-name">Plumb</div>
               <div class="about-tag">A straight line through your history.</div>
+              <div v-if="update" class="about-version mono">
+                Version {{ update.current }}
+                <span v-if="update.available" class="upd-new">· {{ update.latest }} available</span>
+                <span v-else class="upd-ok">· up to date</span>
+              </div>
+              <div class="about-actions">
+                <button class="btn" :disabled="checking" @click="checkUpdate">
+                  {{ checking ? "Checking…" : "Check for updates" }}
+                </button>
+                <button v-if="update?.available" class="btn-accent" @click="openUrl(update.url)">
+                  Download {{ update.latest }} ↗
+                </button>
+              </div>
+              <div v-if="checkErr" class="about-err mono">{{ checkErr }}</div>
               <div class="about-meta mono">
                 A free, native macOS Git client · Tauri + Vue<br />
                 Keys in your Keychain · no Plumb account · no server.
@@ -611,5 +649,13 @@ function hex(v: string | undefined): string {
 .about-mark { display: flex; justify-content: center; margin-bottom: var(--space-4); color: var(--text); }
 .about-name { font-size: 32px; font-weight: 800; letter-spacing: -0.02em; }
 .about-tag { font-size: 14px; color: var(--text-mid); margin-top: var(--space-2); }
+.about-version { font-size: 11.5px; color: var(--text-mid); margin-top: var(--space-4); }
+.about-version .upd-new { color: var(--accent); font-weight: 700; }
+.about-version .upd-ok { color: var(--text-faint); }
+.about-actions { display: flex; gap: var(--space-2); justify-content: center; margin-top: var(--space-3); }
+.about-actions .btn { height: 30px; padding: 0 14px; background: var(--raised); border: 1px solid var(--line); color: var(--text); font-size: 12px; cursor: pointer; }
+.about-actions .btn:disabled { opacity: 0.6; }
+.about-actions .btn-accent { height: 30px; padding: 0 14px; background: var(--accent); color: var(--accent-on); border: 1px solid var(--accent); font-size: 12px; font-weight: 700; cursor: pointer; }
+.about-err { font-size: 11px; color: var(--accent); margin-top: var(--space-2); }
 .about-meta { font-size: 11px; color: var(--text-faint); line-height: 1.7; margin-top: var(--space-6); }
 </style>
