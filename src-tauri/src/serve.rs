@@ -38,7 +38,7 @@ struct Ctx {
 
 /// Where the running agent advertises itself so editors can find and reuse it
 /// instead of spawning their own server.
-fn discovery_path() -> Option<std::path::PathBuf> {
+pub(crate) fn discovery_path() -> Option<std::path::PathBuf> {
     #[cfg(target_os = "macos")]
     {
         let home = std::env::var("HOME").ok()?;
@@ -436,6 +436,8 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, Strin
         "checkout_commit" => ok(tauri::async_runtime::block_on(git::checkout_commit(s("path"), s("id")))),
         "create_branch" => ok(tauri::async_runtime::block_on(git::create_branch(s("path"), s("name"), s("id"), b("checkout")))),
         "delete_branch" => ok(git::delete_branch(s("path"), s("name"))),
+        "delete_branches" => ok(git::delete_branches(s("path"), vs("names"))),
+        "unmerged_branches" => ok(git::unmerged_branches(s("path"), vs("names"))),
         "delete_tag" => ok(git::delete_tag(s("path"), s("name"))),
         "merge_branch_ex" => ok(tauri::async_runtime::block_on(git::merge_branch_ex(
             s("path"), s("name"), b("squash"), b("noFf"), b("noCommit"), b("verifySignatures"), b("noVerify"),
@@ -503,7 +505,7 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, Strin
         "list_remote_branches" => ok(block_on(git::list_remote_branches(s("url")))),
         "push_branch" => ok(block_on(git::push_branch(s("path"), s("branch")))),
         "push_target" => ok(block_on(git::push_target(s("path"), s("remote"), s("remoteBranch"), b("setUpstream"), b("forceWithLease")))),
-        "pull_mode" => ok(block_on(git::pull_mode(s("path"), s("mode")))),
+        "pull_mode" => ok(block_on(git::pull_mode(s("path"), s("mode"), args["autostash"].as_bool()))),
         "push_advanced" => ok(block_on(git::push_advanced(s("path"), sopt("remote"), b("forceWithLease"), b("pushTags"), b("setUpstream")))),
         "add_remote" => ok(git::add_remote(s("path"), s("name"), s("url"))),
         "rename_remote" => ok(git::rename_remote(s("path"), s("from"), s("to"))),
@@ -588,6 +590,18 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, Strin
             serde_json::from_value(args["ctx"].clone()).unwrap_or_default(),
         ))),
         "job_log" => ok(block_on(accounts::job_log(app.clone(), s("repoPath"), s("jobId")))),
+
+        // ── App window (MCP "open_in_plumb") ──
+        "focus_repo" => {
+            use tauri::Emitter;
+            let path = s("path");
+            if !git::is_repo(path.clone()) {
+                return Err(format!("{path} is not a Git repository"));
+            }
+            let _ = app.emit("open-path", path);
+            crate::show_main(app);
+            okv(Value::Null)
+        }
 
         // ── Native capability bridge (served-mode only) ──
         "open_url" => {

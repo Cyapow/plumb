@@ -2,6 +2,7 @@ mod accounts;
 mod actions;
 mod ai;
 mod git;
+mod mcp;
 mod secrets;
 mod serve;
 mod watcher;
@@ -216,6 +217,66 @@ async fn install_vscode_extension() -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// The command line an AI client should spawn for Plumb's MCP server:
+/// `[<this binary>, "mcp"]`. The frontend renders it into each client's config.
+#[tauri::command]
+fn mcp_command() -> Result<Vec<String>, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    Ok(vec![exe.to_string_lossy().to_string(), "mcp".into()])
+}
+
+/// Locate the Claude Code CLI.
+fn find_claude() -> Option<String> {
+    let mut candidates = vec!["claude".to_string()];
+    if let Ok(home) = std::env::var("HOME") {
+        candidates.push(format!("{home}/.claude/local/claude"));
+        candidates.push(format!("{home}/.local/bin/claude"));
+    }
+    candidates.push("/opt/homebrew/bin/claude".into());
+    candidates.push("/usr/local/bin/claude".into());
+    candidates.into_iter().find(|c| {
+        std::process::Command::new(c)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
+}
+
+/// Register Plumb's MCP server with Claude Code for the current user
+/// (`claude mcp add --scope user plumb -- <plumb> mcp`).
+#[tauri::command]
+async fn install_claude_code_mcp() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let claude = find_claude().ok_or_else(|| {
+            "Claude Code's `claude` command isn't on your PATH. Install it from https://claude.com/claude-code, then try again.".to_string()
+        })?;
+        let cmd = mcp_command()?;
+        // Replace any previous registration so re-running after an app move works.
+        let _ = std::process::Command::new(&claude)
+            .args(["mcp", "remove", "--scope", "user", "plumb"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        let out = std::process::Command::new(&claude)
+            .args(["mcp", "add", "--scope", "user", "plumb", "--"])
+            .args(&cmd)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if out.status.success() {
+            Ok("Added to Claude Code (user scope). Start a new Claude Code session and ask it about your repo.".to_string())
+        } else {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            let msg = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            Err(if err.is_empty() { msg } else { err })
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Whether Plumb's background server is set to launch at login.
 #[tauri::command]
 fn get_autostart(app: AppHandle) -> bool {
@@ -236,7 +297,7 @@ fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
 fn arg_repo_path(args: &[String]) -> Option<String> {
     args.iter()
         .skip(1)
-        .filter(|a| !a.starts_with('-') && a.as_str() != "serve")
+        .filter(|a| !a.starts_with('-') && a.as_str() != "serve" && a.as_str() != "mcp")
         .filter_map(|p| std::fs::canonicalize(p).ok())
         .find(|p| p.is_dir())
         .map(|p| p.to_string_lossy().to_string())
@@ -245,7 +306,7 @@ fn arg_repo_path(args: &[String]) -> Option<String> {
 /// Promote to a normal windowed app (macOS Dock icon) and show the main window.
 /// Used by the tray "Open" item and when a second launch is forwarded to a
 /// running (possibly menu-bar-only) instance.
-fn show_main<R: Runtime>(app: &AppHandle<R>) {
+pub(crate) fn show_main<R: Runtime>(app: &AppHandle<R>) {
     use tauri::Manager as _;
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
@@ -294,7 +355,14 @@ fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let launched = arg_repo_path(&std::env::args().collect::<Vec<_>>());
+    let argv: Vec<String> = std::env::args().collect();
+    // `plumb mcp [repo]` is a plain stdio process for AI clients — no window, no
+    // Tauri runtime. It talks to (or starts) the `serve` agent instead.
+    if argv.get(1).map(String::as_str) == Some("mcp") {
+        mcp::run(&argv);
+        return;
+    }
+    let launched = arg_repo_path(&argv);
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
         // Single-instance must be first: a second `plumb <path>` invocation
@@ -401,6 +469,8 @@ pub fn run() {
             get_autostart,
             set_autostart,
             install_vscode_extension,
+            mcp_command,
+            install_claude_code_mcp,
             git::open_repo,
             git::is_repo,
             git::init_repo,
@@ -476,6 +546,8 @@ pub fn run() {
             git::reset,
             git::discard_paths,
             git::delete_branch,
+            git::delete_branches,
+            git::unmerged_branches,
             git::delete_tag,
             git::fetch,
             git::fetch_quiet,

@@ -6,7 +6,7 @@ import { compareRefs, compareFileDiff } from "../lib/git";
 import { openFullscreen, toast } from "../lib/ui";
 
 const open = defineModel<boolean>({ required: true });
-const props = defineProps<{ repoPath: string; branches: string[]; currentBranch: string | null; presetBase: string | null }>();
+const props = defineProps<{ repoPath: string; branches: string[]; currentBranch: string | null; presetBase: string | null; presetCompare?: string | null }>();
 
 const base = ref("");
 const compare = ref("");
@@ -17,7 +17,7 @@ watch(open, (o) => {
   if (!o) return;
   error.value = null;
   base.value = props.presetBase ?? ["main", "master"].find((b) => props.branches.includes(b)) ?? props.branches[0] ?? "";
-  compare.value = props.currentBranch ?? props.branches.find((b) => b !== base.value) ?? "";
+  compare.value = props.presetCompare ?? props.currentBranch ?? props.branches.find((b) => b !== base.value) ?? "";
   if (compare.value === base.value) compare.value = props.branches.find((b) => b !== base.value) ?? compare.value;
 });
 

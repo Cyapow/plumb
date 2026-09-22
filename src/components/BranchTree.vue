@@ -1,6 +1,7 @@
 <script setup lang="ts">
-// Recursive branch tree. Folders collapse; leaves behave like the old branch
-// rows (click = jump to tip, double-click = check out, right-click = menu).
+// Recursive branch tree. Folders collapse; leaves: click = select + jump to
+// tip (⌘-click toggles, ⇧-click extends the selection), double-click = check
+// out, right-click = menu for the branch or the whole selection.
 import { inject, ref } from "vue";
 import type { BranchNode } from "../lib/branchtree";
 import type { BranchInfo } from "../lib/git";
@@ -9,7 +10,8 @@ defineProps<{ nodes: BranchNode[]; depth?: number }>();
 
 interface Actions {
   checkout: (name: string) => void;
-  jump: (target: string | null) => void;
+  select: (e: MouseEvent, b: BranchInfo) => void;
+  isSelected: (name: string) => boolean;
   menu: (e: MouseEvent, b: BranchInfo) => void;
   colorFor: (name: string) => string;
 }
@@ -23,10 +25,10 @@ const pad = (depth: number) => `${(depth ?? 0) * 14 + 12}px`;
     <div
       v-if="node.branch"
       class="row leaf mono"
-      :class="{ head: node.branch.is_head }"
+      :class="{ head: node.branch.is_head, sel: actions.isSelected(node.branch.name) }"
       :style="{ paddingLeft: pad(depth ?? 0) }"
-      :title="node.branch.is_head ? 'Current branch' : `Click to jump to tip · double-click to check out ${node.branch.name}`"
-      @click="actions.jump(node.branch.target)"
+      :title="node.branch.is_head ? 'Current branch' : `Click to select · double-click to check out ${node.branch.name} · ⌘/⇧-click to select several`"
+      @click="actions.select($event, node.branch)"
       @dblclick="!node.branch.is_head && actions.checkout(node.branch.name)"
       @contextmenu="actions.menu($event, node.branch)"
     >
@@ -64,6 +66,8 @@ const pad = (depth: number) => `${(depth ?? 0) * 14 + 12}px`;
 }
 .row:hover { background: color-mix(in srgb, var(--raised) 55%, transparent); }
 .row.leaf.head { color: var(--text); font-weight: 500; }
+.row.leaf.sel { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--text); box-shadow: inset 2px 0 0 var(--accent); }
+.row.leaf.sel:hover { background: color-mix(in srgb, var(--accent) 22%, transparent); }
 .row .ellipsis { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chev { width: 10px; flex: none; color: var(--text-faint); font-size: 9px; }
 .folder { color: var(--text-dim); }

@@ -27,7 +27,7 @@ import {
   type SettingsSection,
 } from "../lib/ui";
 import { BUILTIN_THEMES, MODERNIST_BASE, type Theme, type TokenKey } from "../lib/themes";
-import { getAutostart, setAutostart, installVscodeExtension, listEditors, preferredEditor, setPreferredEditor, type EditorInfo } from "../lib/git";
+import { getAutostart, setAutostart, installVscodeExtension, mcpCommand, installClaudeCodeMcp, listEditors, preferredEditor, setPreferredEditor, type EditorInfo } from "../lib/git";
 import { openUrl, openFile } from "../lib/native";
 import { toast } from "../lib/ui";
 import AiProvidersPanel from "./AiProvidersPanel.vue";
@@ -65,6 +65,7 @@ watch(
   (s) => {
     if (s === "integrations") {
       getAutostart().then((v) => (autostart.value = v)).catch(() => {});
+      mcpCommand().then((v) => (mcpCmd.value = v)).catch(() => (mcpCmd.value = ["plumb", "mcp"]));
       loadEditors();
     }
   },
@@ -93,6 +94,48 @@ async function installVsc() {
     installMsg.value = String(e);
   } finally {
     installing.value = false;
+  }
+}
+
+// AI assistants (MCP). The server is `plumb mcp`; each client wants it in a
+// slightly different shape, so we render the snippets from one command line.
+const mcpCmd = ref<string[]>([]);
+const mcpJson = computed(() => {
+  const [command, ...args] = mcpCmd.value;
+  return JSON.stringify({ mcpServers: { plumb: { command, args } } }, null, 2);
+});
+const mcpShell = computed(() => mcpCmd.value.map((a) => (/[\s"']/.test(a) ? `"${a}"` : a)).join(" "));
+const cursorDeepLink = computed(() => {
+  const [command, ...args] = mcpCmd.value;
+  const cfg = btoa(JSON.stringify({ command, args }));
+  return `cursor://anysphere.cursor-deeplink/mcp/install?name=plumb&config=${cfg}`;
+});
+const vscodeDeepLink = computed(() => {
+  const [command, ...args] = mcpCmd.value;
+  return `vscode:mcp/install?${encodeURIComponent(JSON.stringify({ name: "plumb", command, args }))}`;
+});
+async function copyText(text: string, what: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("Copied", `${what} copied to the clipboard.`, "ok");
+  } catch {
+    toast("Copy failed", "Select the text and copy it manually.", "error");
+  }
+}
+const mcpInstalling = ref(false);
+const mcpMsg = ref("");
+const mcpErr = ref(false);
+async function installMcpClaude() {
+  mcpInstalling.value = true;
+  mcpMsg.value = "";
+  mcpErr.value = false;
+  try {
+    mcpMsg.value = await installClaudeCodeMcp();
+  } catch (e) {
+    mcpErr.value = true;
+    mcpMsg.value = String(e);
+  } finally {
+    mcpInstalling.value = false;
   }
 }
 
@@ -243,6 +286,47 @@ function hex(v: string | undefined): string {
                   <button class="btn" @click="openUrl('https://github.com/Cyapow/plumb/tree/main/editors/jetbrains')">
                     Build from source ↗
                   </button>
+                </div>
+              </div>
+
+              <div class="int-block">
+                <div class="row-title">AI assistants (MCP)</div>
+                <div class="row-sub">
+                  Plumb ships an <b>MCP server</b> — <code>plumb mcp</code> — so Claude Code, Claude Desktop, Cursor,
+                  VS Code Copilot and other MCP clients can read your repo, stage, commit, branch, open pull
+                  requests and more, through this app and its connected accounts. Calls go to the same background
+                  server the editor panels use. Destructive tools (reset, discard, delete) are flagged so clients ask first.
+                </div>
+
+                <div class="int-h" style="margin-top: var(--space-4)">Claude Code</div>
+                <div class="int-p">Registers the server for your user via <code>claude mcp add</code>.</div>
+                <div class="install-row">
+                  <button class="btn-accent" :disabled="mcpInstalling" @click="installMcpClaude">
+                    <span v-if="mcpInstalling" class="spinner-sm"></span>{{ mcpInstalling ? "Adding…" : "Add to Claude Code" }}
+                  </button>
+                  <button class="btn" @click="copyText(`claude mcp add --scope user plumb -- ${mcpShell}`, 'Command')">Copy command</button>
+                </div>
+                <div v-if="mcpMsg" class="install-msg" :class="{ err: mcpErr }">{{ mcpMsg }}</div>
+
+                <div class="int-h" style="margin-top: var(--space-4)">Cursor / VS Code</div>
+                <div class="int-p">One-click install links (the editor asks you to confirm).</div>
+                <div class="install-row">
+                  <button class="btn" @click="openUrl(cursorDeepLink)">Add to Cursor ↗</button>
+                  <button class="btn" @click="openUrl(vscodeDeepLink)">Add to VS Code ↗</button>
+                </div>
+
+                <div class="int-h" style="margin-top: var(--space-4)">Claude Desktop and other clients</div>
+                <div class="int-p">
+                  Paste into the client's MCP config (Claude Desktop: <b>Settings → Developer → Edit Config</b>,
+                  <code>claude_desktop_config.json</code>).
+                </div>
+                <pre class="mcp-json">{{ mcpJson }}</pre>
+                <div class="install-row">
+                  <button class="btn" @click="copyText(mcpJson, 'Config')">Copy JSON</button>
+                </div>
+                <div class="int-p">
+                  Tools default to the repository the client was started in; pass <code>path</code> to target another.
+                  ChatGPT only connects to MCP servers over HTTPS, so it can't launch this local server directly.
                 </div>
               </div>
 
@@ -465,6 +549,7 @@ function hex(v: string | undefined): string {
 .integrations .btn-accent:disabled { opacity: 0.7; }
 .integrations .btn { height: 32px; padding: 0 14px; background: var(--raised); border: 1px solid var(--line); color: var(--text); font-size: 12.5px; cursor: pointer; }
 .integrations .install-msg { margin-top: var(--space-2); font-size: 11.5px; color: var(--text-mid); }
+.integrations .mcp-json { margin: var(--space-3) 0 0; padding: var(--space-3); font-family: var(--font-mono); font-size: 11px; line-height: 1.5; color: var(--text); background: var(--surface); border: 1px solid var(--line-soft); overflow-x: auto; user-select: text; white-space: pre; }
 .integrations .install-msg.err { color: var(--accent); }
 .integrations .spinner-sm { width: 11px; height: 11px; border: 2px solid color-mix(in srgb, var(--accent-on) 40%, transparent); border-top-color: var(--accent-on); border-radius: 50%; animation: plumb-spin 0.7s linear infinite; }
 @keyframes plumb-spin { to { transform: rotate(360deg); } }

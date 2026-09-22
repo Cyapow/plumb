@@ -95,6 +95,16 @@ export function installVscodeExtension(): Promise<string> {
   return invoke("install_vscode_extension");
 }
 
+/** The command an AI client should spawn for Plumb's MCP server: [binary, "mcp"]. */
+export function mcpCommand(): Promise<string[]> {
+  return invoke("mcp_command");
+}
+
+/** Register the MCP server with Claude Code via `claude mcp add`. */
+export function installClaudeCodeMcp(): Promise<string> {
+  return invoke("install_claude_code_mcp");
+}
+
 export function listSystemFonts(): Promise<string[]> {
   return invoke("list_system_fonts");
 }
@@ -485,6 +495,16 @@ export function deleteBranch(path: string, name: string): Promise<void> {
   return invoke("delete_branch", { path, name });
 }
 
+/** Delete several local branches; each entry reports its own error, if any. */
+export function deleteBranches(path: string, names: string[]): Promise<{ name: string; error: string | null }[]> {
+  return invoke("delete_branches", { path, names });
+}
+
+/** Which of these local branches have commits not yet merged into HEAD. */
+export function unmergedBranches(path: string, names: string[]): Promise<string[]> {
+  return invoke("unmerged_branches", { path, names });
+}
+
 export function deleteTag(path: string, name: string): Promise<void> {
   return invoke("delete_tag", { path, name });
 }
@@ -540,8 +560,9 @@ export function pushBranch(path: string, branch: string): Promise<string> {
   return invoke("push_branch", { path, branch });
 }
 
-export function pullMode(path: string, mode: "merge" | "rebase" | "ff-only"): Promise<string> {
-  return invoke("pull_mode", { path, mode });
+/** Pull with an explicit mode; `autostash` stashes and reapplies uncommitted changes around it. */
+export function pullMode(path: string, mode: "merge" | "rebase" | "ff-only", autostash = false): Promise<string> {
+  return invoke("pull_mode", { path, mode, autostash });
 }
 
 export function deleteRemoteBranch(path: string, remote: string, branch: string): Promise<string> {
