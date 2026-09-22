@@ -85,6 +85,7 @@ import {
   promptConfirm,
   toast,
   fullscreen,
+  closeFullscreen,
   contextMenu,
   fileInspector,
   appState,
@@ -453,6 +454,15 @@ function toggleFavorite(path: string) {
     : [...favorites.value, path];
   localStorage.setItem("plumb.favorites", JSON.stringify(favorites.value));
 }
+// The full-screen diff viewer and file inspector belong to the repo they were
+// opened from (their loaders close over its path), so leaving that repo —
+// tab click, ⌘T/⌘W, a CLI/editor open — dismisses them rather than showing
+// another repo's code over this one.
+watch(activePath, (path, prev) => {
+  if (path === prev) return;
+  if (fullscreen.open) closeFullscreen();
+  if (fileInspector.open) fileInspector.open = false;
+});
 function selectTab(path: string) {
   if (activePath.value === path) return;
   captureTab(); // snapshot the tab we're leaving
