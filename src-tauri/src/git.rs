@@ -165,7 +165,7 @@ pub fn is_repo(path: String) -> bool {
 
 /// Initialize a new Git repository at `path`. `branch` names the initial
 /// branch (unborn until the first commit); defaults to "main".
-#[tauri::command]
+#[tauri::command(async)]
 pub fn init_repo(path: String, branch: Option<String>) -> Result<()> {
     let mut opts = git2::RepositoryInitOptions::new();
     let name = branch.as_deref().map(str::trim).filter(|b| !b.is_empty()).unwrap_or("main");
@@ -180,7 +180,7 @@ pub struct RemoteInfo {
     pub url: String,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_remotes(path: String) -> Result<Vec<RemoteInfo>> {
     let repo = open(&path)?;
     let mut out = Vec::new();
@@ -198,7 +198,7 @@ pub fn list_remotes(path: String) -> Result<Vec<RemoteInfo>> {
 }
 
 /// Add a remote (e.g. origin) pointing at a URL.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn add_remote(path: String, name: String, url: String) -> Result<()> {
     let repo = open(&path)?;
     repo.remote(&name, &url)?;
@@ -206,7 +206,7 @@ pub fn add_remote(path: String, name: String, url: String) -> Result<()> {
 }
 
 /// Open a repository (or discover one from a path inside it) and return a summary.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_repo(path: String) -> Result<RepoInfo> {
     let repo = Repository::discover(&path).map_err(|_| GitError::NotARepo(path.clone()))?;
     let workdir = repo
@@ -254,7 +254,7 @@ pub fn open_repo(path: String) -> Result<RepoInfo> {
 }
 
 /// Walk history across all local and remote branches, newest first.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_commits(path: String, limit: Option<usize>, skip: Option<usize>) -> Result<Vec<CommitRow>> {
     let repo = open(&path)?;
     let limit = limit.unwrap_or(500);
@@ -296,7 +296,7 @@ pub fn list_commits(path: String, limit: Option<usize>, skip: Option<usize>) -> 
 }
 
 /// List local and remote-tracking branches with ahead/behind vs their upstream.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_branches(path: String) -> Result<Vec<BranchInfo>> {
     let repo = open(&path)?;
     let mut out = Vec::new();
@@ -362,7 +362,7 @@ pub fn list_branches(path: String) -> Result<Vec<BranchInfo>> {
 }
 
 /// Working-tree + index status, one entry per changed path.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn working_status(path: String) -> Result<Vec<StatusEntry>> {
     let repo = open(&path)?;
     let mut opts = StatusOptions::new();
@@ -415,7 +415,7 @@ pub fn working_status(path: String) -> Result<Vec<StatusEntry>> {
 }
 
 /// Stage the given paths (add for created/modified, remove for deletions).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn stage_paths(path: String, paths: Vec<String>) -> Result<()> {
     let repo = open(&path)?;
     let workdir = repo.workdir().map(|w| w.to_path_buf());
@@ -436,7 +436,7 @@ pub fn stage_paths(path: String, paths: Vec<String>) -> Result<()> {
 }
 
 /// Unstage the given paths (reset their index entry back to HEAD).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn unstage_paths(path: String, paths: Vec<String>) -> Result<()> {
     let repo = open(&path)?;
     match repo.head() {
@@ -457,7 +457,7 @@ pub fn unstage_paths(path: String, paths: Vec<String>) -> Result<()> {
 }
 
 /// Read a single file's diff. `staged` selects HEAD↔index vs index↔workdir.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn file_diff(path: String, file: String, staged: bool, force: Option<bool>) -> Result<FileDiff> {
     let repo = open(&path)?;
     let mut opts = DiffOptions::new();
@@ -606,14 +606,21 @@ fn split_patch(text: &str) -> (String, Vec<String>) {
 
 /// Apply a patch to the index via the system git (reliable partial staging).
 fn git_apply_cached(dir: &str, patch: &str, reverse: bool) -> Result<()> {
+    git_apply(dir, patch, reverse, true)
+}
+
+/// Apply a patch with the system git — to the index when `cached`, otherwise
+/// to the working tree.
+fn git_apply(dir: &str, patch: &str, reverse: bool, cached: bool) -> Result<()> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
     let mut cmd = Command::new("git");
-    cmd.current_dir(dir)
-        .arg("apply")
-        .arg("--cached")
-        .arg("--whitespace=nowarn");
+    cmd.current_dir(dir).arg("apply");
+    if cached {
+        cmd.arg("--cached");
+    }
+    cmd.arg("--whitespace=nowarn");
     if reverse {
         cmd.arg("--reverse");
     }
@@ -667,6 +674,21 @@ pub async fn unstage_hunk(path: String, file: String, hunk_index: usize) -> Resu
             .get(hunk_index)
             .ok_or_else(|| GitError::Message("Hunk no longer exists — refresh.".into()))?;
         git_apply_cached(&path, &format!("{header}{hunk}"), true)
+    })
+    .await
+}
+
+/// Discard a single unstaged hunk: reverse-apply it to the working tree so
+/// the file matches the index for that hunk. Destructive — confirm in the UI.
+#[tauri::command]
+pub async fn discard_hunk(path: String, file: String, hunk_index: usize) -> Result<()> {
+    spawn(move || {
+        let repo = open(&path)?;
+        let (header, hunks) = split_patch(&file_patch_text(&repo, &file, false)?);
+        let hunk = hunks
+            .get(hunk_index)
+            .ok_or_else(|| GitError::Message("Hunk no longer exists — refresh.".into()))?;
+        git_apply(&path, &format!("{header}{hunk}"), true, false)
     })
     .await
 }
@@ -816,7 +838,7 @@ pub struct StashEntry {
     pub id: String,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_stashes(path: String) -> Result<Vec<StashEntry>> {
     let mut repo = open(&path)?;
     let mut out = Vec::new();
@@ -901,7 +923,7 @@ pub async fn stash_pop(path: String, index: usize) -> Result<()> {
     .await
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn stash_drop(path: String, index: usize) -> Result<()> {
     let mut repo = open(&path)?;
     repo.stash_drop(index)?;
@@ -916,7 +938,7 @@ pub struct TagInfo {
     pub target: Option<String>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_tags(path: String) -> Result<Vec<TagInfo>> {
     let repo = open(&path)?;
     // Carry a sort key: the tagger date for annotated tags, else the target
@@ -1206,7 +1228,7 @@ pub struct RepoState {
     pub conflicts: bool,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn repo_state(path: String) -> Result<RepoState> {
     let repo = open(&path)?;
     let state = match repo.state() {
@@ -1243,7 +1265,7 @@ pub struct ReflogEntry {
 }
 
 /// Read the HEAD reflog (most recent first), capped so it stays snappy.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn reflog(path: String) -> Result<Vec<ReflogEntry>> {
     let repo = open(&path)?;
     let rl = repo.reflog("HEAD")?;
@@ -1285,7 +1307,7 @@ fn entry_path(e: &git2::IndexEntry) -> String {
 }
 
 /// List paths that currently have merge conflicts (index has multiple stages).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_conflicts(path: String) -> Result<Vec<String>> {
     let repo = open(&path)?;
     let index = repo.index()?;
@@ -1303,7 +1325,7 @@ pub fn list_conflicts(path: String) -> Result<Vec<String>> {
 
 /// The three sides of a conflicted file plus the current working-tree contents
 /// (which still has the conflict markers until resolved).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn conflict_sides(path: String, file: String) -> Result<ConflictSides> {
     let repo = open(&path)?;
     let index = repo.index()?;
@@ -1378,7 +1400,7 @@ fn delta_code(status: git2::Delta) -> &'static str {
 }
 
 /// Full metadata and changed-file list for a single commit.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn commit_details(path: String, id: String) -> Result<CommitDetail> {
     let repo = open(&path)?;
     let oid = Oid::from_str(&id)?;
@@ -1429,7 +1451,7 @@ pub struct CompareSummary {
 }
 
 /// Compare `base` with `compare` (each a branch name or revspec).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn compare_refs(path: String, base: String, compare: String) -> Result<CompareSummary> {
     let repo = open(&path)?;
     let base_commit = repo.revparse_single(&base)?.peel_to_commit()?;
@@ -1450,7 +1472,7 @@ pub fn compare_refs(path: String, base: String, compare: String) -> Result<Compa
 }
 
 /// Diff of one file between two refs.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn compare_file_diff(path: String, base: String, compare: String, file: String, force: Option<bool>) -> Result<FileDiff> {
     let repo = open(&path)?;
     let base_tree = repo.revparse_single(&base)?.peel_to_commit()?.tree()?;
@@ -1515,7 +1537,7 @@ pub async fn search_commits(
 }
 
 /// Diff of one file within a commit (against its first parent).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn commit_file_diff(path: String, id: String, file: String, force: Option<bool>) -> Result<FileDiff> {
     let repo = open(&path)?;
     let oid = Oid::from_str(&id)?;
@@ -1616,7 +1638,7 @@ pub async fn discard_paths(path: String, paths: Vec<String>) -> Result<()> {
 }
 
 /// Delete a local branch by name.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_branch(path: String, name: String) -> Result<()> {
     let repo = open(&path)?;
     let mut branch = repo.find_branch(&name, BranchType::Local)?;
@@ -1669,7 +1691,7 @@ pub fn delete_branches(path: String, names: Vec<String>) -> Result<Vec<BranchDel
 }
 
 /// Delete a local tag by short name (e.g. "v1.2.3").
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_tag(path: String, name: String) -> Result<()> {
     let repo = open(&path)?;
     repo.tag_delete(&name)?;
@@ -1738,7 +1760,7 @@ fn ran_ok(cmd: &mut std::process::Command) -> bool {
 }
 
 /// Open the repo folder in the system terminal.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_in_terminal(path: String) -> Result<()> {
     #[cfg(target_os = "macos")]
     let ok = ran_ok(std::process::Command::new("open").args(["-a", "Terminal", &path]));
@@ -1820,7 +1842,7 @@ fn editor_installed(_mac_app: &str, bin: &str) -> bool {
 }
 
 /// The known editors with an `installed` flag, for the settings picker.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_editors() -> Result<Vec<EditorInfo>> {
     Ok(KNOWN_EDITORS
         .iter()
@@ -1862,7 +1884,7 @@ fn launch_editor(editor: &str, path: &str) -> bool {
 
 /// Open the repo (or a file) in the chosen editor; falls back to VS Code then
 /// the OS default when none is set or the chosen one fails to launch.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_in_editor(path: String, editor: Option<String>) -> Result<()> {
     if let Some(ed) = editor.as_deref().filter(|s| !s.trim().is_empty()) {
         if launch_editor(ed, &path) {
@@ -1893,7 +1915,7 @@ pub fn open_in_editor(path: String, editor: Option<String>) -> Result<()> {
 
 /// Read the given git-config keys (repo-effective: local over global). Missing
 /// keys are simply absent from the map.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_config(path: String, keys: Vec<String>) -> Result<HashMap<String, String>> {
     let repo = open(&path)?;
     let cfg = repo.config()?;
@@ -1909,7 +1931,7 @@ pub fn get_config(path: String, keys: Vec<String>) -> Result<HashMap<String, Str
 }
 
 /// Set a git-config key, in this repo's config or globally.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_config(path: String, key: String, value: String, global: bool) -> Result<()> {
     let mut cfg = if global {
         git2::Config::open_default()?
@@ -1921,7 +1943,7 @@ pub fn set_config(path: String, key: String, value: String, global: bool) -> Res
 }
 
 /// Remove a git-config key (ignored if it doesn't exist).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn unset_config(path: String, key: String, global: bool) -> Result<()> {
     let mut cfg = if global {
         git2::Config::open_default()?
@@ -1933,14 +1955,14 @@ pub fn unset_config(path: String, key: String, global: bool) -> Result<()> {
 }
 
 /// The repo's .git/description text.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_repo_description(path: String) -> Result<String> {
     let repo = open(&path)?;
     let p = repo.path().join("description");
     Ok(std::fs::read_to_string(p).unwrap_or_default().trim_end().to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_repo_description(path: String, text: String) -> Result<()> {
     let repo = open(&path)?;
     let p = repo.path().join("description");
@@ -1949,7 +1971,7 @@ pub fn set_repo_description(path: String, text: String) -> Result<()> {
 }
 
 /// Read the whole .gitignore (empty string if none).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_gitignore(path: String) -> Result<String> {
     let repo = open(&path)?;
     let root = repo.workdir().ok_or_else(|| GitError::Message("No working directory.".into()))?;
@@ -1957,7 +1979,7 @@ pub fn get_gitignore(path: String) -> Result<String> {
 }
 
 /// Overwrite .gitignore with `text`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_gitignore(path: String, text: String) -> Result<()> {
     let repo = open(&path)?;
     let root = repo.workdir().ok_or_else(|| GitError::Message("No working directory.".into()))?;
@@ -1966,7 +1988,7 @@ pub fn set_gitignore(path: String, text: String) -> Result<()> {
 }
 
 /// Append a pattern to the repo's .gitignore (deduplicated).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn add_to_gitignore(path: String, pattern: String) -> Result<()> {
     let repo = open(&path)?;
     let root = repo.workdir().ok_or_else(|| GitError::Message("No working directory.".into()))?;
@@ -2140,7 +2162,7 @@ pub struct GitIdentity {
 }
 
 /// Read the effective commit identity and signing setting for a repo.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_identity(path: String) -> Result<GitIdentity> {
     let repo = open(&path)?;
     let cfg = repo.config()?;
@@ -2153,7 +2175,7 @@ pub fn git_identity(path: String) -> Result<GitIdentity> {
 }
 
 /// Set user.name / user.email, either in this repo's config or globally.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_git_identity(path: String, name: String, email: String, global: bool) -> Result<()> {
     let mut cfg = if global {
         git2::Config::open_default()?
@@ -2168,7 +2190,7 @@ pub fn set_git_identity(path: String, name: String, email: String, global: bool)
 /// Create a commit from the current index. Returns the new commit id. When
 /// `sign` is set we route through the user's `git` so their GPG/SSH signing
 /// config (and any signing key) is honoured — libgit2 can't sign on its own.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn commit(
     path: String,
     message: String,
@@ -2635,7 +2657,7 @@ fn cfg_or(cfg: &git2::Config, key: &str, default: &str) -> String {
     cfg.get_string(key).ok().filter(|s| !s.is_empty()).unwrap_or_else(|| default.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn flow_config(path: String) -> Result<FlowConfig> {
     let repo = open(&path)?;
     let cfg = repo.config()?;
@@ -2659,7 +2681,7 @@ pub fn flow_config(path: String) -> Result<FlowConfig> {
 }
 
 /// Record which workflow this repo uses.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn flow_set_type(path: String, workflow: String) -> Result<()> {
     let repo = open(&path)?;
     repo.config()?.set_str("plumb.workflow.type", &workflow)?;
@@ -2667,7 +2689,7 @@ pub fn flow_set_type(path: String, workflow: String) -> Result<()> {
 }
 
 /// Set the GitLab Flow environment branches (comma-separated, promotion order).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn flow_set_environments(path: String, csv: String) -> Result<()> {
     let repo = open(&path)?;
     repo.config()?.set_str("plumb.workflow.environments", &csv)?;
@@ -2782,7 +2804,7 @@ pub struct SubmoduleInfo {
     pub modified: bool,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_submodules(path: String) -> Result<Vec<SubmoduleInfo>> {
     let repo = open(&path)?;
     let mut out = Vec::new();
@@ -2904,7 +2926,7 @@ pub struct BisectStatus {
     pub current_short: Option<String>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn bisect_status(path: String) -> Result<BisectStatus> {
     let repo = open(&path)?;
     let active = repo.path().join("BISECT_LOG").exists();
@@ -2961,7 +2983,7 @@ pub async fn delete_remote_branch(path: String, remote: String, branch: String) 
 }
 
 /// Rename a remote.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rename_remote(path: String, from: String, to: String) -> Result<()> {
     let repo = open(&path)?;
     repo.remote_rename(&from, &to)?;
@@ -2969,7 +2991,7 @@ pub fn rename_remote(path: String, from: String, to: String) -> Result<()> {
 }
 
 /// Remove a remote.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn remove_remote(path: String, name: String) -> Result<()> {
     let repo = open(&path)?;
     repo.remote_delete(&name)?;
@@ -2977,7 +2999,7 @@ pub fn remove_remote(path: String, name: String) -> Result<()> {
 }
 
 /// Change a remote's URL.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_remote_url(path: String, name: String, url: String) -> Result<()> {
     let repo = open(&path)?;
     repo.remote_set_url(&name, &url)?;
@@ -3273,5 +3295,25 @@ mod tests {
         assert_eq!(list_stashes(p(&d)).unwrap().len(), 1);
         block(stash_apply_ex(p(&d), 0, false, false)).unwrap();
         assert_eq!(std::fs::read_to_string(d.path().join("a.txt")).unwrap(), "dirty");
+    }
+
+    #[test]
+    fn discard_hunk_reverts_only_that_hunk() {
+        let d = tmp();
+        setup(&d);
+        let base: String = (1..=30).map(|i| format!("line {i}\n")).collect();
+        commit_file(&d, "a.txt", &base, "base");
+        // Two edits far enough apart to land in separate hunks.
+        let edited = base.replace("line 2\n", "line 2 edited\n").replace("line 29\n", "line 29 edited\n");
+        std::fs::write(d.path().join("a.txt"), &edited).unwrap();
+        assert_eq!(file_diff(p(&d), "a.txt".into(), false, None).unwrap().hunks.len(), 2);
+
+        block(discard_hunk(p(&d), "a.txt".into(), 0)).unwrap();
+
+        // git apply writes through the checkout filters, so a Windows runner
+        // (core.autocrlf=true) hands the file back with CRLF endings.
+        let now = std::fs::read_to_string(d.path().join("a.txt")).unwrap().replace("\r\n", "\n");
+        assert!(now.contains("line 2\n") && !now.contains("line 2 edited"));
+        assert!(now.contains("line 29 edited\n"), "second hunk must survive");
     }
 }

@@ -39,6 +39,9 @@ export interface GraphNode {
 export interface GraphLayout {
   nodes: GraphNode[];
   segments: Segment[];
+  /** Index into `segments` where each row's band starts (length rows + 1),
+   *  so a row window can slice its segments without scanning them all. */
+  rowSeg: number[];
   width: number;
   height: number;
 }
@@ -55,10 +58,12 @@ function freeColumn(lanes: (string | undefined)[]): number {
 export function layoutGraph(commits: CommitRow[]): GraphLayout {
   const nodes: GraphNode[] = [];
   const segments: Segment[] = [];
+  const rowSeg: number[] = [];
   let incoming: (string | undefined)[] = [];
   let maxCol = 0;
 
   commits.forEach((commit, row) => {
+    rowSeg.push(segments.length);
     const yTop = row * ROW_H;
     const yMid = yTop + ROW_H / 2;
     const yBot = yTop + ROW_H;
@@ -130,9 +135,12 @@ export function layoutGraph(commits: CommitRow[]): GraphLayout {
     incoming = outgoing;
   });
 
+  rowSeg.push(segments.length);
+
   return {
     nodes,
     segments,
+    rowSeg,
     width: (maxCol + 1) * LANE_W,
     height: commits.length * ROW_H,
   };

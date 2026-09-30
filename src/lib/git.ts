@@ -188,6 +188,11 @@ export function unstageHunk(path: string, file: string, hunkIndex: number): Prom
   return invoke("unstage_hunk", { path, file, hunkIndex });
 }
 
+/** Throw away one unstaged hunk from the working tree. Destructive. */
+export function discardHunk(path: string, file: string, hunkIndex: number): Promise<void> {
+  return invoke("discard_hunk", { path, file, hunkIndex });
+}
+
 export function stageLines(path: string, file: string, hunkIndex: number, lines: number[]): Promise<void> {
   return invoke("stage_lines", { path, file, hunkIndex, lines });
 }
