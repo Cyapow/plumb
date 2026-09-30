@@ -3226,7 +3226,9 @@ mod tests {
 
         block(discard_hunk(p(&d), "a.txt".into(), 0)).unwrap();
 
-        let now = std::fs::read_to_string(d.path().join("a.txt")).unwrap();
+        // git apply writes through the checkout filters, so a Windows runner
+        // (core.autocrlf=true) hands the file back with CRLF endings.
+        let now = std::fs::read_to_string(d.path().join("a.txt")).unwrap().replace("\r\n", "\n");
         assert!(now.contains("line 2\n") && !now.contains("line 2 edited"));
         assert!(now.contains("line 29 edited\n"), "second hunk must survive");
     }
