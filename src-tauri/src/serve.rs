@@ -486,6 +486,7 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, Strin
         // ── Git: staging (hunk / line) ──
         "stage_hunk" => ok(block_on(git::stage_hunk(s("path"), s("file"), uz("hunkIndex")))),
         "unstage_hunk" => ok(block_on(git::unstage_hunk(s("path"), s("file"), uz("hunkIndex")))),
+        "discard_hunk" => ok(block_on(git::discard_hunk(s("path"), s("file"), uz("hunkIndex")))),
         "stage_lines" => ok(block_on(git::stage_lines(s("path"), s("file"), uz("hunkIndex"), uzs("lines")))),
         "unstage_lines" => ok(block_on(git::unstage_lines(s("path"), s("file"), uz("hunkIndex"), uzs("lines")))),
 

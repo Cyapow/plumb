@@ -18,6 +18,7 @@ const props = defineProps<{
   loading?: boolean;
   emptyText?: string;
   actionLabel?: string; // e.g. "Stage hunk" / "Unstage hunk"
+  discardable?: boolean; // show a per-hunk "Discard hunk" button
   selectable?: boolean; // enable per-line selection
   filePath?: string | null; // for syntax highlighting
   truncated?: boolean; // backend withheld the hunks (over its line cap)
@@ -26,6 +27,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "hunkAction", index: number): void;
+  (e: "discardHunk", index: number): void;
   (e: "lineAction", hunkIndex: number, lines: number[]): void;
   (e: "showAnyway"): void;
 }>();
@@ -222,6 +224,7 @@ function pickedInHunk(hi: number): number[] {
               class="hunk-btn accent"
               @click="emit('lineAction', r.hi, pickedInHunk(r.hi))"
             >{{ verb() }} {{ pickedInHunk(r.hi).length }} line{{ pickedInHunk(r.hi).length === 1 ? "" : "s" }}</button>
+            <button v-if="discardable" class="hunk-btn danger" @click="emit('discardHunk', r.hi)">Discard hunk</button>
             <button v-if="actionLabel" class="hunk-btn" @click="emit('hunkAction', r.hi)">{{ actionLabel }}</button>
           </span>
         </div>
@@ -253,6 +256,7 @@ function pickedInHunk(hi: number): number[] {
             <div v-if="r.kind === 'head'" class="hunk-head">
               <span class="hh-text">{{ hunks[r.hi].header }}</span>
               <span class="hunk-actions">
+                <button v-if="discardable" class="hunk-btn danger" @click="emit('discardHunk', r.hi)">Discard hunk</button>
                 <button v-if="actionLabel" class="hunk-btn" @click="emit('hunkAction', r.hi)">{{ actionLabel }}</button>
               </span>
             </div>
@@ -313,6 +317,7 @@ function pickedInHunk(hi: number): number[] {
 .hunk-actions:empty { display: none; }
 .hunk-btn { flex: none; font-family: var(--font-ui); font-size: 10.5px; font-weight: 600; padding: 2px 8px; margin: 3px 0; background: var(--raised); border: 1px solid var(--line); color: var(--text-mid); cursor: pointer; }
 .hunk-btn:hover { border-color: var(--accent); color: var(--accent); }
+.hunk-btn.danger:hover { border-color: var(--diff-del-fg); color: var(--diff-del-fg); }
 .hunk-btn.accent { background: var(--accent); color: var(--accent-on); border-color: var(--accent); }
 /* Windowed mode assumes every row is exactly one line tall so the spacer
    maths is exact: hunk headers lose the button's vertical margin. */

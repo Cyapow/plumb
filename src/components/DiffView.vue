@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Loads a working-tree diff (staged or unstaged) and renders it via DiffBody.
-// Optionally shows a per-hunk action button (stage/unstage) and forwards clicks.
+// Optionally shows per-hunk action buttons (stage/unstage, discard) and forwards clicks.
 import { ref, watch } from "vue";
 import { fileDiff, type FileDiff } from "../lib/git";
 import { diffReloadKey } from "../lib/ui";
@@ -11,12 +11,14 @@ const props = defineProps<{
   file: string | null;
   staged: boolean;
   actionLabel?: string;
+  discardable?: boolean;
   refresh?: number;
   selectable?: boolean;
 }>();
 
 defineEmits<{
   (e: "hunkAction", index: number): void;
+  (e: "discardHunk", index: number): void;
   (e: "lineAction", hunkIndex: number, lines: number[]): void;
 }>();
 
@@ -66,12 +68,14 @@ function showAnyway() {
       :binary="diff?.binary"
       :loading="loading"
       :action-label="actionLabel"
+      :discardable="discardable"
       :selectable="selectable"
       :file-path="file"
       :truncated="diff?.truncated"
       :total-lines="diff?.total_lines"
       @show-anyway="showAnyway"
       @hunk-action="(i) => $emit('hunkAction', i)"
+      @discard-hunk="(i) => $emit('discardHunk', i)"
       @line-action="(hi, lines) => $emit('lineAction', hi, lines)"
     />
   </div>

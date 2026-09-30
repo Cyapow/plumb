@@ -420,6 +420,7 @@ pub fn run() {
             git::unstage_paths,
             git::stage_hunk,
             git::unstage_hunk,
+            git::discard_hunk,
             git::stage_lines,
             git::unstage_lines,
             git::clone_repo,

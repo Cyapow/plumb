@@ -8,6 +8,7 @@ import {
   unstagePaths,
   stageHunk,
   unstageHunk,
+  discardHunk,
   stageLines,
   unstageLines,
   discardPaths,
@@ -196,6 +197,25 @@ async function onHunkAction(index: number) {
   }
 }
 
+async function onDiscardHunk(index: number) {
+  if (!selected.value || diffMode.value !== "unstaged") return;
+  const file = selected.value;
+  const ok = await promptConfirm({
+    title: `Discard this hunk in ${file}?`,
+    body: "The working-tree change is thrown away. This cannot be undone.",
+    confirmLabel: "Discard",
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    await discardHunk(props.repoPath, file, index);
+    await reload();
+    diffRefresh.value++;
+  } catch (e) {
+    toast("Discard failed", String(e), "error");
+  }
+}
+
 async function onLineAction(hunkIndex: number, lines: number[]) {
   if (!selected.value || !lines.length) return;
   const file = selected.value;
@@ -260,9 +280,31 @@ async function toggle(entry: StatusEntry) {
   }
 }
 
-async function stageAll() {
-  await stagePaths(props.repoPath, leftOut.value.map((f) => f.path));
-  await reload();
+// Section checkboxes: tick "Left out" to move everything into the commit
+// (including the unstaged remainder of partially staged files); untick
+// "Files in this commit" to move everything back out.
+const bulkBusy = ref(false);
+async function bulk(fn: () => Promise<void>) {
+  if (bulkBusy.value) return;
+  bulkBusy.value = true;
+  error.value = null;
+  try {
+    await fn();
+    await reload();
+    diffRefresh.value++;
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    bulkBusy.value = false;
+  }
+}
+function stageAll() {
+  const paths = files.value.filter((f) => f.unstaged || !f.staged).map((f) => f.path);
+  if (paths.length) return bulk(() => stagePaths(props.repoPath, paths));
+}
+function unstageAll() {
+  const paths = inCommit.value.map((f) => f.path);
+  if (paths.length) return bulk(() => unstagePaths(props.repoPath, paths));
 }
 
 async function doCommit() {
@@ -370,7 +412,14 @@ function expand() {
       <!-- Files -->
       <div class="files" :style="{ width: filesWidth + 'px' }">
         <div class="files-head">
-          <span class="tick filled">✓</span>
+          <span
+            class="tick"
+            :class="{ filled: inCommit.length, disabled: !inCommit.length || bulkBusy }"
+            role="checkbox"
+            :aria-checked="inCommit.length > 0"
+            title="Uncheck to move every file out of this commit"
+            @click="unstageAll"
+          >✓</span>
           <span class="section-label">Files in this commit</span>
           <span class="hint mono">{{ inCommit.length }} selected</span>
         </div>
@@ -389,7 +438,14 @@ function expand() {
         <div v-if="!inCommit.length" class="files-empty">Nothing staged yet.</div>
 
         <div class="files-head sub">
-          <span class="tick"></span>
+          <span
+            class="tick"
+            :class="{ disabled: !leftOut.length || bulkBusy }"
+            role="checkbox"
+            aria-checked="false"
+            title="Check to move every file into this commit"
+            @click="stageAll"
+          ></span>
           <span class="section-label">Left out</span>
           <button v-if="leftOut.length" class="stage-all" @click="stageAll">Stage all</button>
         </div>
@@ -433,9 +489,11 @@ function expand() {
           :file="selected"
           :staged="diffMode === 'staged'"
           :action-label="actionLabel"
+          :discardable="diffMode === 'unstaged'"
           :refresh="diffRefresh"
           selectable
           @hunk-action="onHunkAction"
+          @discard-hunk="onDiscardHunk"
           @line-action="onLineAction"
         />
       </div>
@@ -564,6 +622,8 @@ function expand() {
   color: transparent;
 }
 .tick.filled { background: var(--accent); border-color: var(--accent); color: var(--accent-on); }
+.tick:not(.filled):hover { border-color: var(--accent); }
+.files-head .tick.disabled { opacity: 0.4; cursor: default; pointer-events: none; }
 
 .code { width: 10px; flex: none; font-weight: 700; }
 .code.add { color: var(--lane-1); }

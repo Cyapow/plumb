@@ -6,14 +6,30 @@
 // The SVG is full-height and sits absolutely inside the history scroller, so it
 // scrolls in lockstep with the commit rows — no separate scroll context. It
 // emits its pixel width so the list can reserve a matching text gutter.
+//
+// Layout covers every loaded commit (lanes depend on all rows above), but only
+// the rows in [from, to) — the list's virtual window — are put in the DOM, so
+// thousands of loaded commits don't mean tens of thousands of SVG elements.
 import { computed, watch } from "vue";
 import type { CommitRow } from "../lib/git";
 import { layoutGraph, NODE_R, LANE_W } from "../lib/graph";
 
-const props = defineProps<{ commits: CommitRow[] }>();
+const props = defineProps<{ commits: CommitRow[]; from?: number; to?: number }>();
 const emit = defineEmits<{ (e: "width", w: number): void }>();
 
 const layout = computed(() => layoutGraph(props.commits));
+const range = computed(() => {
+  const n = layout.value.nodes.length;
+  const from = Math.max(0, Math.min(n, props.from ?? 0));
+  const to = Math.max(from, Math.min(n, props.to ?? n));
+  return { from, to };
+});
+const segments = computed(() => {
+  const { from, to } = range.value;
+  const rs = layout.value.rowSeg;
+  return layout.value.segments.slice(rs[from] ?? 0, rs[to] ?? 0);
+});
+const nodes = computed(() => layout.value.nodes.slice(range.value.from, range.value.to));
 const laneVar = (lane: number) => `var(--lane-${lane})`;
 
 watch(() => layout.value.width, (w) => emit("width", w), { immediate: true });
@@ -28,8 +44,8 @@ watch(() => layout.value.width, (w) => emit("width", w), { immediate: true });
     aria-hidden="true"
   >
     <line
-      v-for="(s, i) in layout.segments"
-      :key="'s' + i"
+      v-for="(s, i) in segments"
+      :key="'s' + ((layout.rowSeg[range.from] ?? 0) + i)"
       :x1="s.x1"
       :y1="s.y1"
       :x2="s.x2"
@@ -38,7 +54,7 @@ watch(() => layout.value.width, (w) => emit("width", w), { immediate: true });
       stroke-width="2"
       fill="none"
     />
-    <template v-for="(n, i) in layout.nodes" :key="'n' + i">
+    <template v-for="(n, i) in nodes" :key="'n' + (range.from + i)">
       <!-- HEAD: ringed square -->
       <rect
         v-if="n.head"

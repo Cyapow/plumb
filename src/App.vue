@@ -173,9 +173,13 @@ const histBodyEl = ref<HTMLElement | null>(null);
 const histWindow = computed(() => {
   const total = visibleCommits.value.length;
   const buf = 12;
-  const start = Math.max(0, Math.floor(histScrollTop.value / HIST_ROW_H) - buf);
-  const end = Math.min(total, Math.ceil((histScrollTop.value + histHeight.value) / HIST_ROW_H) + buf);
-  return { items: visibleCommits.value.slice(start, end), offset: start * HIST_ROW_H, total };
+  // Clamp to the real content height: a stale scrollTop from a longer list
+  // (refresh shrank it, tab switch) must never window past the last row.
+  const maxTop = Math.max(0, total * HIST_ROW_H - histHeight.value);
+  const top = Math.min(histScrollTop.value, maxTop);
+  const start = Math.max(0, Math.floor(top / HIST_ROW_H) - buf);
+  const end = Math.min(total, Math.ceil((top + histHeight.value) / HIST_ROW_H) + buf);
+  return { items: visibleCommits.value.slice(start, end), offset: start * HIST_ROW_H, total, start, end };
 });
 function onHistScroll(e: Event) {
   const el = e.target as HTMLElement;
@@ -183,9 +187,24 @@ function onHistScroll(e: Event) {
   histHeight.value = el.clientHeight;
   if (el.scrollHeight - el.scrollTop - el.clientHeight < 600) loadMoreCommits();
 }
+/** Re-read scroll position and viewport height from the live element. The
+ *  browser clamps scrollTop when content shrinks or the element is recreated
+ *  without always firing "scroll", which left the window pointing at rows
+ *  far below the viewport: blank history with the graph still showing. */
 function measureHist() {
-  if (histBodyEl.value) histHeight.value = histBodyEl.value.clientHeight;
+  const el = histBodyEl.value;
+  if (!el) return;
+  histScrollTop.value = el.scrollTop;
+  if (el.clientHeight > 0) histHeight.value = el.clientHeight;
 }
+let histRo: ResizeObserver | null = null;
+watch(histBodyEl, (el) => {
+  histRo?.disconnect();
+  if (!el) return;
+  histRo ??= new ResizeObserver(() => measureHist());
+  histRo.observe(el);
+  measureHist();
+});
 
 /**
  * Index to move to when stepping a selection by `delta` in a list of `length`.
@@ -1055,18 +1074,38 @@ async function loadRepo(path: string) {
   }
 }
 
+/** Most commits a refresh re-reads; deeper history is kept as already loaded. */
+const REFRESH_MAX = 5000;
+function sameRow(a: CommitRow, b: CommitRow | undefined): boolean {
+  return !!b && a.id === b.id && a.refs.length === b.refs.length && a.refs.every((r, i) => r === b.refs[i]);
+}
+
 /** Re-read commits/branches/status for the already-open repo (e.g. after a commit). */
 async function refresh() {
   if (!repo.value) return;
   const path = repo.value.path;
-  repo.value = await openRepo(path);
+  const info = await openRepo(path);
+  if (repo.value?.path !== path) return; // switched tabs mid-refresh
+  repo.value = info;
+  // Re-read as deep as the user has scrolled (capped) so a file save doesn't
+  // throw away loaded history and yank the scroll position.
+  const depth = Math.min(Math.max(COMMIT_PAGE, commits.value.length), REFRESH_MAX);
   const [c, b, s] = await Promise.all([
-    listCommits(path, 500),
+    listCommits(path, depth),
     listBranches(path),
     workingStatus(path),
   ]);
-  commits.value = c;
-  allCommitsLoaded.value = c.length < COMMIT_PAGE;
+  if (repo.value?.path !== path) return; // switched tabs mid-refresh
+  const old = commits.value;
+  const same = c.length <= old.length && c.every((x, i) => sameRow(x, old[i]));
+  if (!same) {
+    commits.value = c;
+    allCommitsLoaded.value = c.length < depth;
+  } else if (c.length < depth && c.length < old.length) {
+    // History genuinely shorter than what we held (e.g. a reset): trim it.
+    commits.value = c;
+    allCommitsLoaded.value = true;
+  }
   branches.value = b;
   status.value = s;
   loadExtras(path);
@@ -1463,6 +1502,8 @@ function onVisibility() {
 let ciPollTimer: number | undefined;
 // Re-measure the history viewport when it appears or the repo changes.
 watch([() => view.value, () => repo.value?.path], () => nextTick(measureHist));
+// The list length changing (refresh, filter, tab restore) can clamp scrollTop.
+watch(() => visibleCommits.value.length, measureHist, { flush: "post" });
 
 onMounted(async () => {
   window.addEventListener("keydown", onHistoryKey);
@@ -2203,7 +2244,7 @@ async function runOp(fn: () => Promise<unknown>, okMsg: string) {
               <button class="btn" @click="clearCommitFilter">Clear search</button>
             </div>
             <div v-if="!filterActive" class="graph-col" :style="{ width: graphColWidth + 'px' }" @wheel="onGraphWheel">
-              <CommitGraph :commits="commits" :style="{ transform: `translateX(${-graphScrollX}px)` }" @width="graphWidth = $event" />
+              <CommitGraph :commits="commits" :from="histWindow.start" :to="histWindow.end" :style="{ transform: `translateX(${-graphScrollX}px)` }" @width="graphWidth = $event" />
             </div>
 
             <div class="rows" :class="{ filtered: filterActive }" :style="{ height: histWindow.total * 34 + 'px' }">
